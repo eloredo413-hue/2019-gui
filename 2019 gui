@@ -3390,6 +3390,363 @@ task.spawn(function()
 	end
 end)
 
+-- LEAVE / RESET CONFIRMATION PAGES
+--
+-- Ported from the 2021 gui. The "Are you sure you want to leave the
+-- game?" page and the "Are you sure you want to reset your character?"
+-- page of the ESC menu are built separately and come out different:
+-- the Leave page sits lower, with its buttons closer together. The
+-- Reset page is the one to follow, so the Leave page copies its layout
+-- (page size, question, button positions and sizes), and the Leave and
+-- Reset buttons end up in the same spot as in the 2021 gui.
+-- The first button of each page ("Leave", "Reset") is kept blue,
+-- whatever the menu does to it (hover, selection, the touch-screen
+-- clean-up that turns blue buttons grey again).
+--
+-- The pages are found by their text, so this does not depend on how
+-- the menu names them. A page that is not on screen is unparented by
+-- the menu; it is still found through the menu's module records, or
+-- the nil instances.
+
+local MATCH_LEAVE_TO_RESET = true
+local FIRST_BUTTON_BLUE = true
+
+task.spawn(function()
+
+	if not (MATCH_LEAVE_TO_RESET or FIRST_BUTTON_BLUE) then
+		return
+	end
+
+	local BlueButton = "rbxasset://textures/ui/Settings/MenuBarAssets/MenuButtonSelected.png"
+
+	local Questions = {
+		leave = { question = "leave the game", confirm = "leave" },
+		reset = { question = "reset your character", confirm = "reset" },
+	}
+
+	local TextOf = function(Object)
+
+		local Success, Text = pcall(function()
+			return Object.Text
+		end)
+
+		if Success and type(Text) == "string" then
+			return (Text:lower():match("^%s*(.-)%s*$"))
+		end
+
+		return nil
+
+	end
+
+	local IsQuestion = function(Object, Kind)
+
+		if not Object:IsA("TextLabel") then
+			return false
+		end
+
+		local Text = TextOf(Object)
+
+		return Text ~= nil and Text:find(Questions[Kind].question, 1, true) ~= nil
+
+	end
+
+	-- The question, the page it sits on, and the two buttons.
+	local FindParts = function(Root, Kind)
+
+		local Question
+
+		if IsQuestion(Root, Kind) then
+			Question = Root
+		else
+			for _, Object in ipairs(Root:GetDescendants()) do
+				if IsQuestion(Object, Kind) then
+					Question = Object
+					break
+				end
+			end
+		end
+
+		local Page = Question and Question.Parent
+
+		if not Page then
+			return nil
+		end
+
+		local Word = Questions[Kind].confirm
+		local Confirm, Cancel
+
+		for _, Object in ipairs(Page:GetDescendants()) do
+
+			if
+				Object:IsA("GuiButton")
+				and not (Confirm and Confirm:IsAncestorOf(Object))
+				and not (Cancel and Cancel:IsAncestorOf(Object))
+			then
+
+				local Texts = { TextOf(Object) }
+
+				for _, Child in ipairs(Object:GetDescendants()) do
+
+					local Text = (Child:IsA("TextLabel") or Child:IsA("TextButton")) and TextOf(Child)
+
+					if Text then
+						table.insert(Texts, Text)
+					end
+
+				end
+
+				for _, Text in ipairs(Texts) do
+
+					if Text == Word then
+						Confirm = Confirm or Object
+					elseif Text:find("^don") and Text:find(Word, 1, true) then
+						Cancel = Cancel or Object
+					end
+
+				end
+
+			end
+
+		end
+
+		if not Confirm then
+			return nil
+		end
+
+		return { page = Page, question = Question, confirm = Confirm, cancel = Cancel }
+
+	end
+
+	local StillValid = function(Parts, Kind)
+		return Parts ~= nil
+			and Parts.question.Parent == Parts.page
+			and IsQuestion(Parts.question, Kind)
+			and Parts.confirm:IsDescendantOf(Parts.page)
+	end
+
+	-- Places to look: the legacy gui, the menu's
+	-- modules (the pages and the hub keep their page frames), and the
+	-- objects with no parent.
+	local SearchRoots = function()
+
+		local Roots = {}
+
+		local Add = function(Object)
+			if typeof(Object) == "Instance" and Object.Parent then
+				table.insert(Roots, Object)
+			end
+		end
+
+		if typeof(LegacyGui) == "Instance" then
+			Add(LegacyGui)
+		end
+
+		Add(CoreGui:FindFirstChild("NewRobloxGui"))
+
+		pcall(function()
+
+			local Records = Environment().__rbxm_suite_modules
+
+			if type(Records) ~= "table" then
+				return
+			end
+
+			local AddPage = function(Value)
+				if type(Value) == "table" and typeof(rawget(Value, "Page")) == "Instance" then
+					table.insert(Roots, rawget(Value, "Page"))
+				end
+			end
+
+			for Module, Record in pairs(Records) do
+
+				if
+					typeof(Module) == "Instance"
+					and type(Record) == "table"
+					and (
+						Module.Name == "LeaveGame"
+						or Module.Name == "ResetCharacter"
+						or Module.Name == "SettingsHub"
+					)
+				then
+
+					local Data = rawget(Record, "data")
+
+					AddPage(Data)
+
+					local Hub = type(Data) == "table" and rawget(Data, "Instance")
+
+					if type(Hub) == "table" then
+						for _, Value in pairs(Hub) do
+							AddPage(Value)
+						end
+					end
+
+				end
+
+			end
+
+		end)
+
+		pcall(function()
+
+			if type(getnilinstances) ~= "function" then
+				return
+			end
+
+			for _, Object in ipairs(getnilinstances()) do
+				if typeof(Object) == "Instance" and Object:IsA("GuiObject") then
+					table.insert(Roots, Object)
+				end
+			end
+
+		end)
+
+		return Roots
+
+	end
+
+	local CopyProps = function(From, To, Props)
+
+		for _, Prop in ipairs(Props) do
+
+			pcall(function()
+
+				local Value = From[Prop]
+
+				if To[Prop] ~= Value then
+					To[Prop] = Value
+				end
+
+			end)
+
+		end
+
+	end
+
+	local MakeBlue = function(Button)
+
+		pcall(function()
+			if Button:IsA("ImageButton") and Button.Image ~= BlueButton then
+				Button.Image = BlueButton
+			end
+		end)
+
+	end
+
+	local MatchLeaveToReset = function(Leave, Reset)
+
+		CopyProps(Reset.page, Leave.page, { "Size" })
+
+		CopyProps(Reset.question, Leave.question, {
+			"AnchorPoint", "Position", "Size", "TextSize", "TextScaled", "TextWrapped",
+			"TextXAlignment", "TextYAlignment",
+		})
+
+		for _, Pair in ipairs({ { Leave.confirm, Reset.confirm }, { Leave.cancel, Reset.cancel } }) do
+
+			local Mine, Theirs = Pair[1], Pair[2]
+
+			if Mine and Theirs then
+
+				-- The buttons hang off the same element as on the Reset page.
+				if Theirs.Parent == Reset.question and Mine.Parent ~= Leave.question then
+					Mine.Parent = Leave.question
+				elseif Theirs.Parent == Reset.page and Mine.Parent ~= Leave.page then
+					Mine.Parent = Leave.page
+				end
+
+				CopyProps(Theirs, Mine, { "AnchorPoint", "Position", "Size" })
+
+			end
+
+		end
+
+	end
+
+	local Found = { leave = nil, reset = nil }
+
+	task.spawn(function()
+
+		local Warned, Started = false, os.clock()
+
+		while true do
+
+			local Missing = false
+
+			for Kind in pairs(Questions) do
+				if not StillValid(Found[Kind], Kind) then
+					Found[Kind] = nil
+					Missing = true
+				end
+			end
+
+			if Missing then
+
+				for _, Root in ipairs(SearchRoots()) do
+
+					for Kind in pairs(Questions) do
+
+						if not Found[Kind] then
+
+							local Success, Parts = pcall(FindParts, Root, Kind)
+
+							if Success and Parts then
+								Found[Kind] = Parts
+								print("[Legacy] " .. Kind .. " page found:", Parts.page:GetFullName())
+							end
+
+						end
+
+					end
+
+					if Found.leave and Found.reset then
+						break
+					end
+
+				end
+
+				if not (Found.leave and Found.reset) and not Warned and os.clock() - Started > 30 then
+					Warned = true
+					warn("[Legacy] leave / reset pages not found yet (leave: "
+						.. tostring(Found.leave ~= nil) .. ", reset: " .. tostring(Found.reset ~= nil) .. ")")
+				end
+
+			end
+
+			-- Looking through every object with no parent is not free:
+			-- slower after a while.
+			task.wait(Missing and (os.clock() - Started > 30 and 5 or 0.5) or 2)
+
+		end
+
+	end)
+
+	-- Every frame, before it is drawn: whatever changed them since is put back.
+	RunService.RenderStepped:Connect(function()
+
+		local Leave, Reset = Found.leave, Found.reset
+
+		if MATCH_LEAVE_TO_RESET and Leave and Reset then
+			MatchLeaveToReset(Leave, Reset)
+		end
+
+		if FIRST_BUTTON_BLUE then
+
+			if Leave then
+				MakeBlue(Leave.confirm)
+			end
+
+			if Reset then
+				MakeBlue(Reset.confirm)
+			end
+
+		end
+
+	end)
+
+end)
+
+
 -- CHAT ICON
 --
 -- Uses the same stock Roblox chat textures as 2017-2019M_Topbar
@@ -3552,8 +3909,14 @@ task.spawn(function()
 	-- UNREAD NOTIFICATION BADGE
 	--========================================================*
 
-	local BadgeColor = Color3.fromRGB(239, 65, 54)
-	local BadgeSize = 16
+	-- Ported from the 2017 top bar: the unread counter is a white
+	-- bubble with a thin black outline and black numbers, hanging off
+	-- the top-right corner of the chat icon (2017 ChatCounter:
+	-- 18x18 at (1, -12, 0, -4), SourceSansBold 14).
+
+	local BadgeSize = 18
+	local BadgeTextSize = 14
+	local BadgeOutline = 3
 
 	local UnreadCount = 0
 
@@ -3580,11 +3943,12 @@ task.spawn(function()
 	local Badge = Instance.new("Frame")
 
 	Badge.Name = "LegacyChatBadge"
-	Badge.AnchorPoint = Vector2.new(0.5, 0.5)
-	Badge.Position = UDim2.new(1, -3, 0, 3)
+	Badge.AnchorPoint = Vector2.new(0, 0)
+	Badge.Position = UDim2.new(1, -12, 0, -4)
 	Badge.Size = UDim2.fromOffset(BadgeSize, BadgeSize)
-	Badge.BackgroundColor3 = BadgeColor
+	Badge.BackgroundColor3 = Color3.new(0, 0, 0)
 	Badge.BorderSizePixel = 0
+	Badge.Active = false
 	Badge.Visible = false
 	Badge.ZIndex = Icon.ZIndex + 10
 	Badge.Parent = Icon
@@ -3594,19 +3958,36 @@ task.spawn(function()
 	BadgeCorner.CornerRadius = UDim.new(1, 0)
 	BadgeCorner.Parent = Badge
 
+	local BadgeInner = Instance.new("Frame")
+
+	BadgeInner.Name = "LegacyChatBadgeChild"
+	BadgeInner.AnchorPoint = Vector2.new(0.5, 0.5)
+	BadgeInner.Position = UDim2.fromScale(0.5, 0.5)
+	BadgeInner.Size = UDim2.new(1, -BadgeOutline, 1, -BadgeOutline)
+	BadgeInner.BackgroundColor3 = Color3.new(1, 1, 1)
+	BadgeInner.BorderSizePixel = 0
+	BadgeInner.Active = false
+	BadgeInner.ZIndex = Icon.ZIndex + 11
+	BadgeInner.Parent = Badge
+
+	local BadgeInnerCorner = Instance.new("UICorner")
+
+	BadgeInnerCorner.CornerRadius = UDim.new(1, 0)
+	BadgeInnerCorner.Parent = BadgeInner
+
 	local BadgeLabel = Instance.new("TextLabel")
 
 	BadgeLabel.Name = "Amount"
 	BadgeLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-	BadgeLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+	BadgeLabel.Position = UDim2.new(0.5, 0, 0.5, -1)
 	BadgeLabel.Size = UDim2.fromScale(1, 1)
 	BadgeLabel.BackgroundTransparency = 1
 	BadgeLabel.Text = "0"
-	BadgeLabel.TextColor3 = Color3.new(1, 1, 1)
+	BadgeLabel.TextColor3 = Color3.new(0, 0, 0)
 	BadgeLabel.Font = Enum.Font.SourceSansBold
-	BadgeLabel.TextSize = 12
-	BadgeLabel.ZIndex = Icon.ZIndex + 11
-	BadgeLabel.Parent = Badge
+	BadgeLabel.TextSize = BadgeTextSize
+	BadgeLabel.ZIndex = Icon.ZIndex + 12
+	BadgeLabel.Parent = BadgeInner
 
 	local UpdateBadge = function()
 
@@ -3622,7 +4003,7 @@ task.spawn(function()
 
 		BadgeLabel.TextSize =
 			UnreadCount >= 100 and 9
-			or (UnreadCount >= 10 and 11 or 12)
+			or (UnreadCount >= 10 and 11 or BadgeTextSize)
 
 	end
 
