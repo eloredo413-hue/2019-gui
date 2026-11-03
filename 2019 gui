@@ -3768,6 +3768,43 @@ task.spawn(function()
 		SetIfDifferent(Label, "TextSize", Size)
 	end
 
+	-- Where each page sits, across its parent, when it is not moving.
+	-- The menu slides pages in and out sideways: the question and
+	-- buttons are placed for the page's resting spot, so they slide in
+	-- with the page and stop in place, instead of sitting still while
+	-- the page moves under them.
+	local RestX = setmetatable({}, { __mode = "k" })
+	local LastX = setmetatable({}, { __mode = "k" })
+	local Still = setmetatable({}, { __mode = "k" })
+
+	local PageOrigin = function(Page, ScreenWidth)
+
+		local Parent = Page.Parent
+		local Position = Page.AbsolutePosition
+
+		if not (Parent and Parent:IsA("GuiBase2d")) then
+			return Position
+		end
+
+		local X = Position.X - Parent.AbsolutePosition.X
+
+		if LastX[Page] and math.abs(X - LastX[Page]) < 0.5 then
+			Still[Page] = (Still[Page] or 0) + 1
+		else
+			Still[Page] = 0
+		end
+
+		LastX[Page] = X
+
+		-- Not moving for a few frames, and on screen: that's its rest.
+		if Still[Page] >= 5 and math.abs(X) < ScreenWidth * 0.25 then
+			RestX[Page] = X
+		end
+
+		return Vector2.new(Parent.AbsolutePosition.X + (RestX[Page] or 0), Position.Y)
+
+	end
+
 	local LayOutForMobile = function(Parts)
 
 		local Camera = workspace.CurrentCamera
@@ -3785,6 +3822,17 @@ task.spawn(function()
 
 		local L = MobileLayout
 
+		-- Both buttons inside the question, so they always move as one
+		-- with it (the Leave page had them in different places, and one
+		-- trailed behind while the page slid in).
+		for _, Button in ipairs({ Parts.confirm, Parts.cancel or false }) do
+			if Button and Button.Parent ~= Parts.question then
+				Button.Parent = Parts.question
+			end
+		end
+
+		Planned[Parts.page] = PageOrigin(Parts.page, W)
+
 		-- Question
 		local QuestionWidth = W * L.MaxScreenWidth
 		local QuestionHeight = H * L.QuestionHeight
@@ -3798,6 +3846,7 @@ task.spawn(function()
 		)
 
 		SetIfDifferent(Parts.question, "TextWrapped", true)
+		SetIfDifferent(Parts.question, "ClipsDescendants", false)
 		SetIfDifferent(Parts.question, "TextXAlignment", Enum.TextXAlignment.Center)
 		SetIfDifferent(Parts.question, "TextYAlignment", Enum.TextYAlignment.Center)
 		SetTextSize(Parts.question, H * L.QuestionTextSize)
@@ -4002,6 +4051,84 @@ end)
 -- then stays hidden so there is only one.
 local NativeChatCounter = false
 
+-- The 2017 chat notification badge, as on the 2017 top bar: a solid
+-- red circle with a white bold number, a bit over half the width of
+-- the chat icon, overlapping the icon's top-right corner. Sized and
+-- placed as fractions of the icon, so it fits whatever size the icon
+-- is drawn at.
+local Legacy2017Badge = {
+	Color = Color3.fromRGB(248, 66, 69),
+	TextColor = Color3.new(1, 1, 1),
+	Size = 0.55, -- of the icon's width
+	CenterX = 0.95, -- of the icon's width, from its left edge
+	CenterY = 0.12, -- of the icon's height, from its top edge
+}
+
+local MakeLegacy2017Badge = function(Icon, Name)
+
+	local Badge = Instance.new("Frame")
+
+	Badge.Name = Name
+	Badge.AnchorPoint = Vector2.new(0.5, 0.5)
+	Badge.Position = UDim2.fromScale(Legacy2017Badge.CenterX, Legacy2017Badge.CenterY)
+	Badge.Size = UDim2.fromScale(Legacy2017Badge.Size, Legacy2017Badge.Size)
+	Badge.SizeConstraint = Enum.SizeConstraint.RelativeXX
+	Badge.BackgroundColor3 = Legacy2017Badge.Color
+	Badge.BackgroundTransparency = 0
+	Badge.BorderSizePixel = 0
+	Badge.Active = false
+	Badge.Visible = false
+	Badge.ZIndex = Icon.ZIndex + 10
+
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(1, 0)
+	Corner.Parent = Badge
+
+	local Label = Instance.new("TextLabel")
+
+	Label.Name = "Amount"
+	Label.AnchorPoint = Vector2.new(0.5, 0.5)
+	Label.Position = UDim2.fromScale(0.5, 0.5)
+	Label.Size = UDim2.fromScale(1, 1)
+	Label.BackgroundTransparency = 1
+	Label.Text = ""
+	Label.TextColor3 = Legacy2017Badge.TextColor
+	Label.TextStrokeTransparency = 1
+	Label.Font = Enum.Font.SourceSansBold
+	Label.TextScaled = true
+	Label.TextXAlignment = Enum.TextXAlignment.Center
+	Label.TextYAlignment = Enum.TextYAlignment.Center
+	Label.ZIndex = Icon.ZIndex + 11
+	Label.Parent = Badge
+
+	-- Keeps the number the size it is in 2017 (about half the circle
+	-- tall) and lets "99+" shrink to fit.
+	local Padding = Instance.new("UIPadding")
+	Padding.PaddingTop = UDim.new(0.14, 0)
+	Padding.PaddingBottom = UDim.new(0.14, 0)
+	Padding.PaddingLeft = UDim.new(0.12, 0)
+	Padding.PaddingRight = UDim.new(0.12, 0)
+	Padding.Parent = Label
+
+	-- The badge hangs over the icon's edge: don't let anything crop it.
+	local Ancestor = Icon
+
+	while Ancestor and Ancestor:IsA("GuiObject") do
+
+		pcall(function()
+			Ancestor.ClipsDescendants = false
+		end)
+
+		Ancestor = Ancestor.Parent
+
+	end
+
+	Badge.Parent = Icon
+
+	return Badge, Label
+
+end
+
 -- CHAT ICON
 --
 -- Uses the same stock Roblox chat textures as 2017-2019M_Topbar
@@ -4164,14 +4291,9 @@ task.spawn(function()
 	-- UNREAD NOTIFICATION BADGE
 	--========================================================*
 
-	-- Ported from the 2017 top bar: the unread counter is a white
-	-- bubble with a thin black outline and black numbers, hanging off
-	-- the top-right corner of the chat icon (2017 ChatCounter:
-	-- 18x18 at (1, -12, 0, -4), SourceSansBold 14).
-
-	local BadgeSize = 18
-	local BadgeTextSize = 14
-	local BadgeOutline = 3
+	-- The 2017 red badge (see MakeLegacy2017Badge above). Only used
+	-- when the top bar has no unread counter of its own; otherwise the
+	-- 2017 chat notification bubble section draws it on that counter.
 
 	local UnreadCount = 0
 
@@ -4183,66 +4305,7 @@ task.spawn(function()
 
 	end
 
-	local Ancestor = Icon
-
-	while Ancestor and Ancestor:IsA("GuiObject") do
-
-		pcall(function()
-			Ancestor.ClipsDescendants = false
-		end)
-
-		Ancestor = Ancestor.Parent
-
-	end
-
-	local Badge = Instance.new("Frame")
-
-	Badge.Name = "LegacyChatBadge"
-	Badge.AnchorPoint = Vector2.new(0, 0)
-	Badge.Position = UDim2.new(1, -12, 0, -4)
-	Badge.Size = UDim2.fromOffset(BadgeSize, BadgeSize)
-	Badge.BackgroundColor3 = Color3.new(0, 0, 0)
-	Badge.BorderSizePixel = 0
-	Badge.Active = false
-	Badge.Visible = false
-	Badge.ZIndex = Icon.ZIndex + 10
-	Badge.Parent = Icon
-
-	local BadgeCorner = Instance.new("UICorner")
-
-	BadgeCorner.CornerRadius = UDim.new(1, 0)
-	BadgeCorner.Parent = Badge
-
-	local BadgeInner = Instance.new("Frame")
-
-	BadgeInner.Name = "LegacyChatBadgeChild"
-	BadgeInner.AnchorPoint = Vector2.new(0.5, 0.5)
-	BadgeInner.Position = UDim2.fromScale(0.5, 0.5)
-	BadgeInner.Size = UDim2.new(1, -BadgeOutline, 1, -BadgeOutline)
-	BadgeInner.BackgroundColor3 = Color3.new(1, 1, 1)
-	BadgeInner.BorderSizePixel = 0
-	BadgeInner.Active = false
-	BadgeInner.ZIndex = Icon.ZIndex + 11
-	BadgeInner.Parent = Badge
-
-	local BadgeInnerCorner = Instance.new("UICorner")
-
-	BadgeInnerCorner.CornerRadius = UDim.new(1, 0)
-	BadgeInnerCorner.Parent = BadgeInner
-
-	local BadgeLabel = Instance.new("TextLabel")
-
-	BadgeLabel.Name = "Amount"
-	BadgeLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-	BadgeLabel.Position = UDim2.new(0.5, 0, 0.5, -1)
-	BadgeLabel.Size = UDim2.fromScale(1, 1)
-	BadgeLabel.BackgroundTransparency = 1
-	BadgeLabel.Text = "0"
-	BadgeLabel.TextColor3 = Color3.new(0, 0, 0)
-	BadgeLabel.Font = Enum.Font.SourceSansBold
-	BadgeLabel.TextSize = BadgeTextSize
-	BadgeLabel.ZIndex = Icon.ZIndex + 12
-	BadgeLabel.Parent = BadgeInner
+	local Badge, BadgeLabel = MakeLegacy2017Badge(Icon, "LegacyChatBadge")
 
 	local UpdateBadge = function()
 
@@ -4255,10 +4318,6 @@ task.spawn(function()
 
 		BadgeLabel.Text =
 			UnreadCount >= 100 and "99+" or tostring(UnreadCount)
-
-		BadgeLabel.TextSize =
-			UnreadCount >= 100 and 9
-			or (UnreadCount >= 10 and 11 or BadgeTextSize)
 
 	end
 
@@ -4596,27 +4655,22 @@ end)
 
 -- 2017 CHAT NOTIFICATION BUBBLE
 --
--- The 2019 top bar has its own unread counter on the chat button: a
--- red circle with white numbers. It is redrawn as the 2017 one: a
--- white 18x18 bubble with a thin black outline and black
--- SourceSansBold numbers. The top bar keeps counting and showing /
--- hiding it as before; only its look changes. While it exists, the
--- extra badge from the chat icon section above stays hidden so there
--- is only one.
+-- The 2019 top bar has its own unread counter on the chat button, and
+-- it looks off. It is replaced by the 2017 badge (MakeLegacy2017Badge
+-- above: solid red circle, white bold number, over the icon's top-right
+-- corner). The top bar keeps counting and deciding when it shows; the
+-- 2017 badge shows the same number at the same moments, and the 2019
+-- counter itself is no longer drawn. While it exists, the chat icon
+-- section's own badge stays hidden so there is only one.
 --
 -- The counter is found by what it shows: a small label with a number
 -- on (or next to) a chat button.
 
 task.spawn(function()
 
-	local BubbleSize = 18
-	local Outline = 3
-
 	local OurNames = {
 		LegacyChatBadge = true,
-		LegacyChatBadgeChild = true,
 		Legacy2017Bubble = true,
-		Legacy2017BubbleInner = true,
 	}
 
 	local IsOurs = function(Object)
@@ -4677,7 +4731,7 @@ task.spawn(function()
 			and (Text:match("^%d+%+?$") ~= nil or Text == "!")
 	end
 
-	-- Chat buttons: top level objects whose name starts with "Chat".
+	-- Chat buttons: objects whose name starts with "Chat".
 	local ChatButtons = function()
 
 		local List = {}
@@ -4722,10 +4776,6 @@ task.spawn(function()
 
 	end
 
-	-- One entry per native counter: { counter, label, outer, inner, sibling, base }
-	local Restyled = {}
-	local Known = setmetatable({}, { __mode = "k" })
-
 	local SetIfDifferent = function(Object, Property, Value)
 		pcall(function()
 			if Object[Property] ~= Value then
@@ -4734,7 +4784,69 @@ task.spawn(function()
 		end)
 	end
 
-	-- Hide the extra badge drawn by the chat icon section.
+	-- The small frame / image the number sits on (never the chat icon).
+	local LooksLikeCounter = function(Object)
+
+		if not (Object and Object:IsA("GuiObject")) then
+			return false
+		end
+
+		local Name = Object.Name:lower()
+
+		if Name:find("counter") or Name:find("badge") or Name:find("unread") or Name:find("notif") then
+			return true
+		end
+
+		if Name:find("chat") or Name:find("icon") then
+			return false
+		end
+
+		if Object:IsA("ImageLabel") or Object:IsA("ImageButton") then
+
+			local Image = Object.Image:lower()
+
+			if Image:find("counter") or Image:find("badge") then
+				return true
+			end
+
+			if Image:find("chat") then
+				return false
+			end
+
+		end
+
+		local Size = Object.AbsoluteSize
+
+		return Size.X > 0 and Size.X <= 26 and Size.Y <= 26
+
+	end
+
+	-- The chat icon the counter belongs to: the first image above it
+	-- that is bigger than it.
+	local FindIcon = function(Counter)
+
+		local Current = Counter.Parent
+
+		while Current and Current ~= Container and Current:IsA("GuiObject") do
+
+			if
+				(Current:IsA("ImageLabel") or Current:IsA("ImageButton"))
+				and Current.Image ~= ""
+				and Current.AbsoluteSize.X > Counter.AbsoluteSize.X * 1.2
+			then
+				return Current
+			end
+
+			Current = Current.Parent
+
+		end
+
+		local Parent = Counter.Parent
+
+		return Parent and Parent:IsA("GuiObject") and Parent or nil
+
+	end
+
 	local HideOurBadge = function()
 
 		for _, Object in ipairs(Container:GetDescendants()) do
@@ -4747,114 +4859,41 @@ task.spawn(function()
 
 	end
 
-	local Restyle = function(Label)
+	-- One entry per 2019 counter: { Counter, Label, Icon, Badge, BadgeLabel }
+	local Replaced = {}
+	local Known = setmetatable({}, { __mode = "k" })
 
-		-- The counter is the small frame / image the number sits on, or
-		-- the label itself when it draws its own circle.
-		local Counter = Label
-		local Parent = Label.Parent
+	local Replace = function(Label)
 
-		local LooksLikeCounter = function(Object)
-
-			if not (Object and Object:IsA("GuiObject")) then
-				return false
-			end
-
-			local Name = Object.Name:lower()
-
-			if Name:find("counter") or Name:find("badge") or Name:find("unread") or Name:find("notif") then
-				return true
-			end
-
-			-- Never the chat icon itself.
-			if Name:find("chat") or Name:find("icon") then
-				return false
-			end
-
-			if Object:IsA("ImageLabel") or Object:IsA("ImageButton") then
-
-				local Image = Object.Image:lower()
-
-				if Image:find("counter") or Image:find("badge") then
-					return true
-				end
-
-				if Image:find("chat") then
-					return false
-				end
-
-			end
-
-			local Size = Object.AbsoluteSize
-
-			return Size.X > 0 and Size.X <= 26 and Size.Y <= 26
-
-		end
-
-		if LooksLikeCounter(Parent) then
-			Counter = Parent
-		end
+		local Counter = LooksLikeCounter(Label.Parent) and Label.Parent or Label
 
 		if Known[Counter] then
 			return
 		end
 
-		Known[Counter] = true
+		local Icon = FindIcon(Counter)
 
-		local Sibling = Counter == Label
-
-		local Outer = Instance.new("Frame")
-
-		Outer.Name = "Legacy2017Bubble"
-		Outer.AnchorPoint = Vector2.new(0.5, 0.5)
-		Outer.Size = UDim2.fromOffset(BubbleSize, BubbleSize)
-		Outer.BackgroundColor3 = Color3.new(0, 0, 0)
-		Outer.BorderSizePixel = 0
-		Outer.Active = false
-
-		local OuterCorner = Instance.new("UICorner")
-		OuterCorner.CornerRadius = UDim.new(1, 0)
-		OuterCorner.Parent = Outer
-
-		local Inner = Instance.new("Frame")
-
-		Inner.Name = "Legacy2017BubbleInner"
-		Inner.AnchorPoint = Vector2.new(0.5, 0.5)
-		Inner.Position = UDim2.fromScale(0.5, 0.5)
-		Inner.Size = UDim2.new(1, -Outline, 1, -Outline)
-		Inner.BackgroundColor3 = Color3.new(1, 1, 1)
-		Inner.BorderSizePixel = 0
-		Inner.Active = false
-		Inner.Parent = Outer
-
-		local InnerCorner = Instance.new("UICorner")
-		InnerCorner.CornerRadius = UDim.new(1, 0)
-		InnerCorner.Parent = Inner
-
-		-- Behind the number: inside the counter, or next to the label
-		-- when the label is the counter (a label's children draw over
-		-- its text).
-		if Sibling then
-			Outer.Parent = Label.Parent
-		else
-			Outer.Position = UDim2.fromScale(0.5, 0.5)
-			Outer.Parent = Counter
+		if not Icon then
+			return
 		end
 
-		table.insert(Restyled, {
+		Known[Counter] = true
+
+		local Badge, BadgeLabel = MakeLegacy2017Badge(Icon, "Legacy2017Bubble")
+
+		table.insert(Replaced, {
 			Counter = Counter,
 			Label = Label,
-			Outer = Outer,
-			Inner = Inner,
-			Sibling = Sibling,
-			Base = Counter.ZIndex,
+			Icon = Icon,
+			Badge = Badge,
+			BadgeLabel = BadgeLabel,
 		})
 
 		NativeChatCounter = true
 
 		HideOurBadge()
 
-		print("[Legacy chat bubble] 2017 bubble on:", Counter:GetFullName())
+		print("[Legacy chat bubble] 2017 badge on:", Icon:GetFullName(), "for", Counter:GetFullName())
 
 	end
 
@@ -4877,7 +4916,7 @@ task.spawn(function()
 						and Object.AbsoluteSize.Y <= 30
 						and NearChat(Object, Chats)
 					then
-						Restyle(Object)
+						Replace(Object)
 					end
 
 				end
@@ -4890,93 +4929,86 @@ task.spawn(function()
 
 	end)
 
-	-- Every frame: keep the 2017 look whatever the top bar does to it.
+	-- Shown when the 2019 counter would be: it and everything between
+	-- it and the icon visible, with a number above 0.
+	local IsShown = function(Entry)
+
+		local Text = Entry.Label.Text
+
+		if not IsCount(Text) or Text == "0" then
+			return false
+		end
+
+		local Current = Entry.Label
+
+		while Current and Current ~= Entry.Icon do
+
+			if Current:IsA("GuiObject") and not Current.Visible then
+				return false
+			end
+
+			Current = Current.Parent
+
+		end
+
+		return true
+
+	end
+
+	-- Every frame: the 2019 counter stays invisible and the 2017 badge
+	-- follows it.
 	RunService.RenderStepped:Connect(function()
 
 		local Index = 1
 
-		while Index <= #Restyled do
+		while Index <= #Replaced do
 
-			local Entry = Restyled[Index]
-			local Counter, Label, Outer, Inner = Entry.Counter, Entry.Label, Entry.Outer, Entry.Inner
+			local Entry = Replaced[Index]
+			local Counter, Label, Badge = Entry.Counter, Entry.Label, Entry.Badge
 
-			if not (Counter.Parent and Label.Parent and Outer.Parent) then
+			if not (Counter.Parent and Label.Parent and Badge.Parent) then
 
 				pcall(function()
-					Outer:Destroy()
+					Badge:Destroy()
 				end)
 
 				Known[Counter] = nil
 
-				table.remove(Restyled, Index)
+				table.remove(Replaced, Index)
 
 				continue
 
 			end
 
-			local Base = Entry.Base
+			-- The 2019 counter: nothing of it drawn.
+			for _, Object in ipairs({ Counter, table.unpack(Counter:GetDescendants()) }) do
 
-			-- No red circle underneath.
-			SetIfDifferent(Counter, "BackgroundTransparency", 1)
-			SetIfDifferent(Label, "BackgroundTransparency", 1)
+				if Object:IsA("GuiObject") then
+					SetIfDifferent(Object, "BackgroundTransparency", 1)
+				end
 
-			if Counter:IsA("ImageLabel") or Counter:IsA("ImageButton") then
-				SetIfDifferent(Counter, "ImageTransparency", 1)
-			end
-
-			for _, Child in ipairs(Counter:GetChildren()) do
-
-				if (Child:IsA("ImageLabel") or Child:IsA("ImageButton")) and Child ~= Outer then
-					SetIfDifferent(Child, "ImageTransparency", 1)
+				if Object:IsA("ImageLabel") or Object:IsA("ImageButton") then
+					SetIfDifferent(Object, "ImageTransparency", 1)
+				elseif Object:IsA("TextLabel") or Object:IsA("TextButton") then
+					SetIfDifferent(Object, "TextTransparency", 1)
+					SetIfDifferent(Object, "TextStrokeTransparency", 1)
+				elseif Object:IsA("UIStroke") then
+					SetIfDifferent(Object, "Enabled", false)
 				end
 
 			end
 
-			-- Black 2017 numbers.
-			local Text = Label.Text
+			-- The 2017 badge.
+			local Shown = IsShown(Entry)
 
-			SetIfDifferent(Label, "TextColor3", Color3.new(0, 0, 0))
-			SetIfDifferent(Label, "TextStrokeTransparency", 1)
-			SetIfDifferent(Label, "Font", Enum.Font.SourceSansBold)
-			SetIfDifferent(Label, "TextScaled", false)
-			SetIfDifferent(Label, "TextSize", #Text >= 3 and 9 or (#Text == 2 and 11 or 14))
-			SetIfDifferent(Label, "TextXAlignment", Enum.TextXAlignment.Center)
-			SetIfDifferent(Label, "TextYAlignment", Enum.TextYAlignment.Center)
+			SetIfDifferent(Badge, "Visible", Shown)
 
-			-- Stacking: counter < outline < white < number.
-			SetIfDifferent(Outer, "ZIndex", Base + 1)
-			SetIfDifferent(Inner, "ZIndex", Base + 2)
-
-			if Entry.Sibling then
-
-				SetIfDifferent(Label, "ZIndex", Base + 3)
-
-			else
-
-				local Current = Label
-
-				while Current and Current ~= Counter do
-					SetIfDifferent(Current, "ZIndex", Base + 3)
-					Current = Current.Parent
-				end
-
+			if Shown then
+				SetIfDifferent(Entry.BadgeLabel, "Text", Label.Text)
 			end
 
-			if Entry.Sibling then
-
-				-- Centred on the label, in the same parent.
-				local P, S, A = Label.Position, Label.Size, Label.AnchorPoint
-
-				SetIfDifferent(Outer, "Position", UDim2.new(
-					P.X.Scale + S.X.Scale * (0.5 - A.X),
-					P.X.Offset + S.X.Offset * (0.5 - A.X),
-					P.Y.Scale + S.Y.Scale * (0.5 - A.Y),
-					P.Y.Offset + S.Y.Offset * (0.5 - A.Y)
-				))
-
-			end
-
-			SetIfDifferent(Outer, "Visible", Label.Visible and Text ~= "" and Text ~= "0")
+			SetIfDifferent(Badge, "ZIndex", Entry.Icon.ZIndex + 10)
+			SetIfDifferent(Entry.BadgeLabel, "ZIndex", Entry.Icon.ZIndex + 11)
 
 			Index = Index + 1
 
