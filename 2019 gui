@@ -3548,7 +3548,7 @@ task.spawn(function()
 	-- Places to look: the legacy gui, the menu's
 	-- modules (the pages and the hub keep their page frames), and the
 	-- objects with no parent.
-	local SearchRoots = function()
+	local SearchRoots = function(IncludeNil)
 
 		local Roots = {}
 
@@ -3610,7 +3610,7 @@ task.spawn(function()
 
 		pcall(function()
 
-			if type(getnilinstances) ~= "function" then
+			if not IncludeNil or type(getnilinstances) ~= "function" then
 				return
 			end
 
@@ -3721,6 +3721,11 @@ task.spawn(function()
 		end)
 	end
 
+	-- Where each element was put this frame. The buttons sit inside the
+	-- question: they are placed from where the question is going, not
+	-- from where it was drawn last frame, so they never trail behind it.
+	local Planned = setmetatable({}, { __mode = "k" })
+
 	-- Put an element at a spot on the screen, in pixels from the
 	-- top-left corner of the screen, whatever its parent is.
 	local Place = function(Object, Left, Top, Width, Height)
@@ -3740,7 +3745,7 @@ task.spawn(function()
 		end
 
 		local Scale = ChildScale(Parent)
-		local Origin = Parent.AbsolutePosition
+		local Origin = Planned[Parent] or Parent.AbsolutePosition
 
 		local Round = function(Value)
 			return math.floor(Value / Scale + 0.5)
@@ -3752,6 +3757,8 @@ task.spawn(function()
 			Round(Top - InsetY - Origin.Y)
 		))
 		SetIfDifferent(Object, "Size", UDim2.fromOffset(Round(Width), Round(Height)))
+
+		Planned[Object] = Vector2.new(Left - InsetX, Top - InsetY)
 
 	end
 
@@ -3837,45 +3844,108 @@ task.spawn(function()
 
 	local Found = { leave = nil, reset = nil }
 
-	task.spawn(function()
+	local Search = function(Roots)
 
-		local Warned, Started = false, os.clock()
-
-		while true do
-
-			local Missing = false
+		for _, Root in ipairs(Roots) do
 
 			for Kind in pairs(Questions) do
-				if not StillValid(Found[Kind], Kind) then
-					Found[Kind] = nil
-					Missing = true
+
+				if not Found[Kind] then
+
+					local Success, Parts = pcall(FindParts, Root, Kind)
+
+					if Success and Parts then
+						Found[Kind] = Parts
+						print("[Legacy] " .. Kind .. " page found:", Parts.page:GetFullName())
+					end
+
+				end
+
+			end
+
+			if Found.leave and Found.reset then
+				return
+			end
+
+		end
+
+	end
+
+	local Missing = function()
+
+		local Any = false
+
+		for Kind in pairs(Questions) do
+			if not StillValid(Found[Kind], Kind) then
+				Found[Kind] = nil
+				Any = true
+			end
+		end
+
+		return Any
+
+	end
+
+	-- The moment a page is built or put on screen, its question shows
+	-- up in the menu's gui: pick it up right away, so the page already
+	-- has its layout the first time it is drawn.
+	local Watch = function(Gui)
+
+		if typeof(Gui) ~= "Instance" then
+			return
+		end
+
+		Gui.DescendantAdded:Connect(function(Object)
+
+			if not Object:IsA("TextLabel") then
+				return
+			end
+
+			local Check = function()
+				if Object.Parent and Missing() then
+					Search({ Object })
 				end
 			end
 
-			if Missing then
+			-- Once the rest of the page (the buttons) is in too.
+			task.defer(Check)
+			task.delay(0.1, Check)
 
-				for _, Root in ipairs(SearchRoots()) do
+		end)
 
-					for Kind in pairs(Questions) do
+	end
 
-						if not Found[Kind] then
+	if typeof(LegacyGui) == "Instance" then
+		Watch(LegacyGui)
+	end
 
-							local Success, Parts = pcall(FindParts, Root, Kind)
+	task.spawn(function()
 
-							if Success and Parts then
-								Found[Kind] = Parts
-								print("[Legacy] " .. Kind .. " page found:", Parts.page:GetFullName())
-							end
+		local NewRobloxGui = CoreGui:FindFirstChild("NewRobloxGui") or CoreGui:WaitForChild("NewRobloxGui", 30)
 
-						end
+		if NewRobloxGui and NewRobloxGui ~= LegacyGui then
+			Watch(NewRobloxGui)
+		end
 
-					end
+	end)
 
-					if Found.leave and Found.reset then
-						break
-					end
+	-- And a regular look in case one is missed. The objects with no
+	-- parent are slow to go through: only every 5 seconds.
+	task.spawn(function()
 
+		local Warned, Started, LastNil = false, os.clock(), 0
+
+		while true do
+
+			if Missing() then
+
+				local IncludeNil = os.clock() - LastNil >= 5
+
+				if IncludeNil then
+					LastNil = os.clock()
 				end
+
+				Search(SearchRoots(IncludeNil))
 
 				if not (Found.leave and Found.reset) and not Warned and os.clock() - Started > 30 then
 					Warned = true
@@ -3885,9 +3955,7 @@ task.spawn(function()
 
 			end
 
-			-- Looking through every object with no parent is not free:
-			-- slower after a while.
-			task.wait(Missing and (os.clock() - Started > 30 and 5 or 0.5) or 2)
+			task.wait(0.5)
 
 		end
 
@@ -3897,6 +3965,8 @@ task.spawn(function()
 	RunService.RenderStepped:Connect(function()
 
 		local Leave, Reset = Found.leave, Found.reset
+
+		table.clear(Planned)
 
 		if MOBILE_LAYOUT_LIKE_2021 and IsTouchDevice then
 
@@ -3926,6 +3996,11 @@ task.spawn(function()
 
 end)
 
+
+-- Set by the 2017 chat notification bubble section below once it has
+-- found the top bar's own unread counter; the chat icon's extra badge
+-- then stays hidden so there is only one.
+local NativeChatCounter = false
 
 -- CHAT ICON
 --
@@ -4171,7 +4246,7 @@ task.spawn(function()
 
 	local UpdateBadge = function()
 
-		if ChatOpen or UnreadCount <= 0 then
+		if NativeChatCounter or ChatOpen or UnreadCount <= 0 then
 			Badge.Visible = false
 			return
 		end
@@ -4511,6 +4586,399 @@ task.spawn(function()
 			end
 
 			task.wait(0.25)
+
+		end
+
+	end)
+
+end)
+
+
+-- 2017 CHAT NOTIFICATION BUBBLE
+--
+-- The 2019 top bar has its own unread counter on the chat button: a
+-- red circle with white numbers. It is redrawn as the 2017 one: a
+-- white 18x18 bubble with a thin black outline and black
+-- SourceSansBold numbers. The top bar keeps counting and showing /
+-- hiding it as before; only its look changes. While it exists, the
+-- extra badge from the chat icon section above stays hidden so there
+-- is only one.
+--
+-- The counter is found by what it shows: a small label with a number
+-- on (or next to) a chat button.
+
+task.spawn(function()
+
+	local BubbleSize = 18
+	local Outline = 3
+
+	local OurNames = {
+		LegacyChatBadge = true,
+		LegacyChatBadgeChild = true,
+		Legacy2017Bubble = true,
+		Legacy2017BubbleInner = true,
+	}
+
+	local IsOurs = function(Object)
+
+		local Current = Object
+
+		while Current do
+
+			if OurNames[Current.Name] then
+				return true
+			end
+
+			Current = Current.Parent
+
+		end
+
+		return false
+
+	end
+
+	local FindContainer = function()
+
+		local NewRobloxGui = CoreGui:FindFirstChild("NewRobloxGui")
+
+		local Container =
+			NewRobloxGui
+			and NewRobloxGui:FindFirstChild("TopBarContainer", true)
+
+		if not Container and typeof(LegacyGui) == "Instance" then
+			Container = LegacyGui:FindFirstChild("TopBarContainer", true)
+		end
+
+		return Container or CoreGui:FindFirstChild("TopBarContainer", true)
+
+	end
+
+	local Container
+
+	local StartTime = os.clock()
+
+	while not Container and os.clock() - StartTime < 20 do
+
+		Container = FindContainer()
+
+		if not Container then
+			task.wait(0.25)
+		end
+
+	end
+
+	if not Container then
+		warn("[Legacy chat bubble] TopBarContainer not found")
+		return
+	end
+
+	local IsCount = function(Text)
+		return type(Text) == "string"
+			and (Text:match("^%d+%+?$") ~= nil or Text == "!")
+	end
+
+	-- Chat buttons: top level objects whose name starts with "Chat".
+	local ChatButtons = function()
+
+		local List = {}
+
+		for _, Object in ipairs(Container:GetDescendants()) do
+
+			if
+				Object:IsA("GuiObject")
+				and Object.Name:lower():find("^chat")
+				and not IsOurs(Object)
+			then
+				table.insert(List, Object)
+			end
+
+		end
+
+		return List
+
+	end
+
+	local NearChat = function(Label, Chats)
+
+		local Center = Label.AbsolutePosition + Label.AbsoluteSize / 2
+
+		for _, Chat in ipairs(Chats) do
+
+			local Position, Size = Chat.AbsolutePosition, Chat.AbsoluteSize
+
+			if
+				Size.X > 0
+				and Center.X >= Position.X - 24
+				and Center.X <= Position.X + Size.X + 24
+				and Center.Y >= Position.Y - 24
+				and Center.Y <= Position.Y + Size.Y + 24
+			then
+				return true
+			end
+
+		end
+
+		return false
+
+	end
+
+	-- One entry per native counter: { counter, label, outer, inner, sibling, base }
+	local Restyled = {}
+	local Known = setmetatable({}, { __mode = "k" })
+
+	local SetIfDifferent = function(Object, Property, Value)
+		pcall(function()
+			if Object[Property] ~= Value then
+				Object[Property] = Value
+			end
+		end)
+	end
+
+	-- Hide the extra badge drawn by the chat icon section.
+	local HideOurBadge = function()
+
+		for _, Object in ipairs(Container:GetDescendants()) do
+
+			if Object.Name == "LegacyChatBadge" and Object:IsA("GuiObject") then
+				SetIfDifferent(Object, "Visible", false)
+			end
+
+		end
+
+	end
+
+	local Restyle = function(Label)
+
+		-- The counter is the small frame / image the number sits on, or
+		-- the label itself when it draws its own circle.
+		local Counter = Label
+		local Parent = Label.Parent
+
+		local LooksLikeCounter = function(Object)
+
+			if not (Object and Object:IsA("GuiObject")) then
+				return false
+			end
+
+			local Name = Object.Name:lower()
+
+			if Name:find("counter") or Name:find("badge") or Name:find("unread") or Name:find("notif") then
+				return true
+			end
+
+			-- Never the chat icon itself.
+			if Name:find("chat") or Name:find("icon") then
+				return false
+			end
+
+			if Object:IsA("ImageLabel") or Object:IsA("ImageButton") then
+
+				local Image = Object.Image:lower()
+
+				if Image:find("counter") or Image:find("badge") then
+					return true
+				end
+
+				if Image:find("chat") then
+					return false
+				end
+
+			end
+
+			local Size = Object.AbsoluteSize
+
+			return Size.X > 0 and Size.X <= 26 and Size.Y <= 26
+
+		end
+
+		if LooksLikeCounter(Parent) then
+			Counter = Parent
+		end
+
+		if Known[Counter] then
+			return
+		end
+
+		Known[Counter] = true
+
+		local Sibling = Counter == Label
+
+		local Outer = Instance.new("Frame")
+
+		Outer.Name = "Legacy2017Bubble"
+		Outer.AnchorPoint = Vector2.new(0.5, 0.5)
+		Outer.Size = UDim2.fromOffset(BubbleSize, BubbleSize)
+		Outer.BackgroundColor3 = Color3.new(0, 0, 0)
+		Outer.BorderSizePixel = 0
+		Outer.Active = false
+
+		local OuterCorner = Instance.new("UICorner")
+		OuterCorner.CornerRadius = UDim.new(1, 0)
+		OuterCorner.Parent = Outer
+
+		local Inner = Instance.new("Frame")
+
+		Inner.Name = "Legacy2017BubbleInner"
+		Inner.AnchorPoint = Vector2.new(0.5, 0.5)
+		Inner.Position = UDim2.fromScale(0.5, 0.5)
+		Inner.Size = UDim2.new(1, -Outline, 1, -Outline)
+		Inner.BackgroundColor3 = Color3.new(1, 1, 1)
+		Inner.BorderSizePixel = 0
+		Inner.Active = false
+		Inner.Parent = Outer
+
+		local InnerCorner = Instance.new("UICorner")
+		InnerCorner.CornerRadius = UDim.new(1, 0)
+		InnerCorner.Parent = Inner
+
+		-- Behind the number: inside the counter, or next to the label
+		-- when the label is the counter (a label's children draw over
+		-- its text).
+		if Sibling then
+			Outer.Parent = Label.Parent
+		else
+			Outer.Position = UDim2.fromScale(0.5, 0.5)
+			Outer.Parent = Counter
+		end
+
+		table.insert(Restyled, {
+			Counter = Counter,
+			Label = Label,
+			Outer = Outer,
+			Inner = Inner,
+			Sibling = Sibling,
+			Base = Counter.ZIndex,
+		})
+
+		NativeChatCounter = true
+
+		HideOurBadge()
+
+		print("[Legacy chat bubble] 2017 bubble on:", Counter:GetFullName())
+
+	end
+
+	-- Look for counters a few times a second (the top bar can build
+	-- or rebuild one at any time).
+	task.spawn(function()
+
+		while Container.Parent do
+
+			pcall(function()
+
+				local Chats = ChatButtons()
+
+				for _, Object in ipairs(Container:GetDescendants()) do
+
+					if
+						(Object:IsA("TextLabel") or Object:IsA("TextButton"))
+						and not IsOurs(Object)
+						and IsCount(Object.Text)
+						and Object.AbsoluteSize.Y <= 30
+						and NearChat(Object, Chats)
+					then
+						Restyle(Object)
+					end
+
+				end
+
+			end)
+
+			task.wait(0.25)
+
+		end
+
+	end)
+
+	-- Every frame: keep the 2017 look whatever the top bar does to it.
+	RunService.RenderStepped:Connect(function()
+
+		local Index = 1
+
+		while Index <= #Restyled do
+
+			local Entry = Restyled[Index]
+			local Counter, Label, Outer, Inner = Entry.Counter, Entry.Label, Entry.Outer, Entry.Inner
+
+			if not (Counter.Parent and Label.Parent and Outer.Parent) then
+
+				pcall(function()
+					Outer:Destroy()
+				end)
+
+				Known[Counter] = nil
+
+				table.remove(Restyled, Index)
+
+				continue
+
+			end
+
+			local Base = Entry.Base
+
+			-- No red circle underneath.
+			SetIfDifferent(Counter, "BackgroundTransparency", 1)
+			SetIfDifferent(Label, "BackgroundTransparency", 1)
+
+			if Counter:IsA("ImageLabel") or Counter:IsA("ImageButton") then
+				SetIfDifferent(Counter, "ImageTransparency", 1)
+			end
+
+			for _, Child in ipairs(Counter:GetChildren()) do
+
+				if (Child:IsA("ImageLabel") or Child:IsA("ImageButton")) and Child ~= Outer then
+					SetIfDifferent(Child, "ImageTransparency", 1)
+				end
+
+			end
+
+			-- Black 2017 numbers.
+			local Text = Label.Text
+
+			SetIfDifferent(Label, "TextColor3", Color3.new(0, 0, 0))
+			SetIfDifferent(Label, "TextStrokeTransparency", 1)
+			SetIfDifferent(Label, "Font", Enum.Font.SourceSansBold)
+			SetIfDifferent(Label, "TextScaled", false)
+			SetIfDifferent(Label, "TextSize", #Text >= 3 and 9 or (#Text == 2 and 11 or 14))
+			SetIfDifferent(Label, "TextXAlignment", Enum.TextXAlignment.Center)
+			SetIfDifferent(Label, "TextYAlignment", Enum.TextYAlignment.Center)
+
+			-- Stacking: counter < outline < white < number.
+			SetIfDifferent(Outer, "ZIndex", Base + 1)
+			SetIfDifferent(Inner, "ZIndex", Base + 2)
+
+			if Entry.Sibling then
+
+				SetIfDifferent(Label, "ZIndex", Base + 3)
+
+			else
+
+				local Current = Label
+
+				while Current and Current ~= Counter do
+					SetIfDifferent(Current, "ZIndex", Base + 3)
+					Current = Current.Parent
+				end
+
+			end
+
+			if Entry.Sibling then
+
+				-- Centred on the label, in the same parent.
+				local P, S, A = Label.Position, Label.Size, Label.AnchorPoint
+
+				SetIfDifferent(Outer, "Position", UDim2.new(
+					P.X.Scale + S.X.Scale * (0.5 - A.X),
+					P.X.Offset + S.X.Offset * (0.5 - A.X),
+					P.Y.Scale + S.Y.Scale * (0.5 - A.Y),
+					P.Y.Offset + S.Y.Offset * (0.5 - A.Y)
+				))
+
+			end
+
+			SetIfDifferent(Outer, "Visible", Label.Visible and Text ~= "" and Text ~= "0")
+
+			Index = Index + 1
 
 		end
 
