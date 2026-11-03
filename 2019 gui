@@ -3408,12 +3408,33 @@ end)
 -- the menu; it is still found through the menu's module records, or
 -- the nil instances.
 
+--
+-- On a touch screen (phones / tablets) both pages are laid out like
+-- the 2021 gui on mobile instead: the question near the top third of
+-- the screen, the two wide buttons side by side under it, centred.
+-- Sizes are fractions of the screen height (measured from the 2021
+-- gui on a phone), so it looks the same on every screen.
+
 local MATCH_LEAVE_TO_RESET = true
 local FIRST_BUTTON_BLUE = true
+local MOBILE_LAYOUT_LIKE_2021 = true
+
+-- 2021 mobile layout, as fractions of the screen height.
+local MobileLayout = {
+	QuestionCenterY = 0.314, -- middle of the question line
+	QuestionHeight = 0.12,
+	QuestionTextSize = 0.062,
+	ButtonTop = 0.456,
+	ButtonWidth = 0.531,
+	ButtonHeight = 0.115,
+	ButtonGap = 0.135, -- space between the two buttons
+	ButtonTextSize = 0.044,
+	MaxScreenWidth = 0.92, -- never wider than this part of the screen
+}
 
 task.spawn(function()
 
-	if not (MATCH_LEAVE_TO_RESET or FIRST_BUTTON_BLUE) then
+	if not (MATCH_LEAVE_TO_RESET or FIRST_BUTTON_BLUE or MOBILE_LAYOUT_LIKE_2021) then
 		return
 	end
 
@@ -3663,6 +3684,157 @@ task.spawn(function()
 
 	end
 
+	local GuiService = game:GetService("GuiService")
+
+	-- UIScale objects above an element scale its children (their
+	-- position, size and text): undo that so the result is in pixels.
+	local ChildScale = function(Parent)
+
+		local Scale = 1
+		local Current = Parent
+
+		while Current do
+
+			local Scaler = Current:FindFirstChildOfClass("UIScale")
+
+			if Scaler and Scaler.Scale > 0 then
+				Scale = Scale * Scaler.Scale
+			end
+
+			if Current:IsA("LayerCollector") then
+				break
+			end
+
+			Current = Current.Parent
+
+		end
+
+		return Scale
+
+	end
+
+	local SetIfDifferent = function(Object, Property, Value)
+		pcall(function()
+			if Object[Property] ~= Value then
+				Object[Property] = Value
+			end
+		end)
+	end
+
+	-- Put an element at a spot on the screen, in pixels from the
+	-- top-left corner of the screen, whatever its parent is.
+	local Place = function(Object, Left, Top, Width, Height)
+
+		local Parent = Object.Parent
+
+		if not (Parent and Parent:IsA("GuiBase2d")) then
+			return
+		end
+
+		local InsetX, InsetY = 0, 0
+		local Root = Object:FindFirstAncestorWhichIsA("LayerCollector")
+
+		if Root and Root:IsA("ScreenGui") and not Root.IgnoreGuiInset then
+			local Inset = GuiService:GetGuiInset()
+			InsetX, InsetY = Inset.X, Inset.Y
+		end
+
+		local Scale = ChildScale(Parent)
+		local Origin = Parent.AbsolutePosition
+
+		local Round = function(Value)
+			return math.floor(Value / Scale + 0.5)
+		end
+
+		SetIfDifferent(Object, "AnchorPoint", Vector2.new(0, 0))
+		SetIfDifferent(Object, "Position", UDim2.fromOffset(
+			Round(Left - InsetX - Origin.X),
+			Round(Top - InsetY - Origin.Y)
+		))
+		SetIfDifferent(Object, "Size", UDim2.fromOffset(Round(Width), Round(Height)))
+
+	end
+
+	local SetTextSize = function(Label, Pixels)
+		local Size = math.clamp(math.floor(Pixels / ChildScale(Label.Parent) + 0.5), 1, 100)
+		SetIfDifferent(Label, "TextScaled", false)
+		SetIfDifferent(Label, "TextSize", Size)
+	end
+
+	local LayOutForMobile = function(Parts)
+
+		local Camera = workspace.CurrentCamera
+
+		if not Camera then
+			return
+		end
+
+		local Screen = Camera.ViewportSize
+		local W, H = Screen.X, Screen.Y
+
+		if W <= 0 or H <= 0 then
+			return
+		end
+
+		local L = MobileLayout
+
+		-- Question
+		local QuestionWidth = W * L.MaxScreenWidth
+		local QuestionHeight = H * L.QuestionHeight
+
+		Place(
+			Parts.question,
+			(W - QuestionWidth) / 2,
+			H * L.QuestionCenterY - QuestionHeight / 2,
+			QuestionWidth,
+			QuestionHeight
+		)
+
+		SetIfDifferent(Parts.question, "TextWrapped", true)
+		SetIfDifferent(Parts.question, "TextXAlignment", Enum.TextXAlignment.Center)
+		SetIfDifferent(Parts.question, "TextYAlignment", Enum.TextYAlignment.Center)
+		SetTextSize(Parts.question, H * L.QuestionTextSize)
+
+		-- Buttons: wide, side by side, centred under the question.
+		local ButtonWidth = H * L.ButtonWidth
+		local ButtonHeight = H * L.ButtonHeight
+		local Gap = H * L.ButtonGap
+
+		local Total = ButtonWidth * 2 + Gap
+		local MaxTotal = W * L.MaxScreenWidth
+
+		if Total > MaxTotal then
+			local Shrink = MaxTotal / Total
+			ButtonWidth = ButtonWidth * Shrink
+			Gap = Gap * Shrink
+			Total = MaxTotal
+		end
+
+		local Left = (W - Total) / 2
+		local Top = H * L.ButtonTop
+
+		for Index, Button in ipairs({ Parts.confirm, Parts.cancel or false }) do
+
+			if Button then
+
+				Place(Button, Left + (Index - 1) * (ButtonWidth + Gap), Top, ButtonWidth, ButtonHeight)
+
+				for _, Child in ipairs(Button:GetDescendants()) do
+					if Child:IsA("TextLabel") and Child.Text ~= "" then
+						SetTextSize(Child, H * L.ButtonTextSize)
+					end
+				end
+
+				if Button:IsA("TextButton") and Button.Text ~= "" then
+					SetTextSize(Button, H * L.ButtonTextSize)
+				end
+
+			end
+
+		end
+
+	end
+
 	local Found = { leave = nil, reset = nil }
 
 	task.spawn(function()
@@ -3726,7 +3898,15 @@ task.spawn(function()
 
 		local Leave, Reset = Found.leave, Found.reset
 
-		if MATCH_LEAVE_TO_RESET and Leave and Reset then
+		if MOBILE_LAYOUT_LIKE_2021 and IsTouchDevice then
+
+			for _, Parts in ipairs({ Leave or false, Reset or false }) do
+				if Parts then
+					pcall(LayOutForMobile, Parts)
+				end
+			end
+
+		elseif MATCH_LEAVE_TO_RESET and Leave and Reset then
 			MatchLeaveToReset(Leave, Reset)
 		end
 
