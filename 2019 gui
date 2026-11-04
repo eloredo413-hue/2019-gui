@@ -3427,13 +3427,18 @@ local MobileLayout = {
 	ButtonTextSize = 0.0375, -- only used if the text can't be measured
 	MaxScreenWidth = 0.92, -- never wider than this part of the screen
 
+	-- How far the button's frame reaches past the button you see, in
+	-- pixels on a 1080 px tall screen (measured on the last screenshots:
+	-- the frame was 27 px wider and taller than the button showing).
+	FaceMargin = { Left = 15, Right = 13, Top = 6, Bottom = 22 },
+
 	-- The text is sized so it is as wide as in the 2021 images (fractions
 	-- of the screen height): "Are you sure you want to leave the game?"
 	-- is 1052 px wide and "Leave" 104 px on a 1080 px tall screen.
 	QuestionSample = "Are you sure you want to leave the game?",
-	QuestionSampleWidth = 0.974,
+	QuestionSampleWidth = 1.015,
 	ButtonSample = "Leave",
-	ButtonSampleWidth = 0.0963,
+	ButtonSampleWidth = 0.1065,
 }
 
 task.spawn(function()
@@ -4174,7 +4179,15 @@ task.spawn(function()
 			return false
 		end
 
-		local W, H = Camera.ViewportSize.X, Camera.ViewportSize.Y
+		-- The whole display, which is what this overlay covers. (The
+		-- camera's viewport leaves out the notch / rounded-corner
+		-- gutters, about 100 px each side on a phone, which put
+		-- everything about 100 px left of where it is in 2021.)
+		local W, H = Overlay.AbsoluteSize.X, Overlay.AbsoluteSize.Y
+
+		if W <= 0 or H <= 0 then
+			W, H = Camera.ViewportSize.X, Camera.ViewportSize.Y
+		end
 
 		if W <= 0 or H <= 0 then
 			return false
@@ -4225,11 +4238,21 @@ task.spawn(function()
 
 		for Index, Button in ipairs(Copy.Buttons) do
 
+			-- ButtonWidth x ButtonHeight is the button you see. Its picture
+			-- has a see-through edge and a shadow, so the frame holding
+			-- it is bigger than that by the margins.
+			local Scale = H / 1080
+			local Margin = L.FaceMargin
+			local FaceLeft = Left + (Index - 1) * (ButtonWidth + Gap)
+
 			SetIfDifferent(Button, "Position", UDim2.fromOffset(
-				math.floor(Left + (Index - 1) * (ButtonWidth + Gap) + 0.5),
-				math.floor(Top + 0.5)
+				math.floor(FaceLeft - Margin.Left * Scale + 0.5),
+				math.floor(Top - Margin.Top * Scale + 0.5)
 			))
-			SetIfDifferent(Button, "Size", UDim2.fromOffset(math.floor(ButtonWidth + 0.5), math.floor(ButtonHeight + 0.5)))
+			SetIfDifferent(Button, "Size", UDim2.fromOffset(
+				math.floor(ButtonWidth + (Margin.Left + Margin.Right) * Scale + 0.5),
+				math.floor(ButtonHeight + (Margin.Top + Margin.Bottom) * Scale + 0.5)
+			))
 
 			for _, Child in ipairs(Button:GetDescendants()) do
 				if Child:IsA("TextLabel") then
@@ -4436,6 +4459,9 @@ task.spawn(function()
 		end
 
 		local Copy = Copies[Shown]
+
+		SetIfDifferent(Overlay, "Enabled", true)
+
 		local Success, Placed = pcall(LayOut, Shown, Copy)
 
 		if not (Success and Placed) then
@@ -4477,10 +4503,23 @@ local Legacy2017Badge = {
 	TextHeight = 1.07, -- number box, of the circle (the number is ~55% of it)
 	TextWidth = 0.86, -- room for "99+" before it shrinks
 	TextCenterY = 0.39, -- the 2017 number sits a little above the middle
+
+	-- The 2017 drop shadow (read off the recording): soft, about 5 px
+	-- wide, strongest to the bottom-left and nearly gone at the top.
+	-- Three stacked soft circles: size (of the badge), how see-through.
+	ShadowLayers = {
+		{ Size = 1.28, Transparency = 0.94 },
+		{ Size = 1.16, Transparency = 0.88 },
+		{ Size = 1.06, Transparency = 0.80 },
+	},
+	ShadowOffsetX = -0.03, -- of the badge's size
+	ShadowOffsetY = 0.05,
 }
 
 local MakeLegacy2017Badge = function(Icon, Name)
 
+	-- The badge is a see-through holder: showing, hiding and placing it
+	-- moves the shadow and the red circle together.
 	local Badge = Instance.new("Frame")
 
 	Badge.Name = Name
@@ -4488,16 +4527,53 @@ local MakeLegacy2017Badge = function(Icon, Name)
 	Badge.Position = UDim2.fromScale(Legacy2017Badge.CenterX, Legacy2017Badge.CenterY)
 	Badge.Size = UDim2.fromScale(Legacy2017Badge.Size, Legacy2017Badge.Size)
 	Badge.SizeConstraint = Enum.SizeConstraint.RelativeXX
-	Badge.BackgroundColor3 = Legacy2017Badge.Color
-	Badge.BackgroundTransparency = 0
+	Badge.BackgroundTransparency = 1
 	Badge.BorderSizePixel = 0
 	Badge.Active = false
 	Badge.Visible = false
 	Badge.ZIndex = Icon.ZIndex + 10
 
+	-- Drop shadow, underneath.
+	for Index, Layer in ipairs(Legacy2017Badge.ShadowLayers) do
+
+		local Shadow = Instance.new("Frame")
+
+		Shadow.Name = "Shadow" .. Index
+		Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+		Shadow.Position = UDim2.fromScale(0.5 + Legacy2017Badge.ShadowOffsetX, 0.5 + Legacy2017Badge.ShadowOffsetY)
+		Shadow.Size = UDim2.fromScale(Layer.Size, Layer.Size)
+		Shadow.BackgroundColor3 = Color3.new(0, 0, 0)
+		Shadow.BackgroundTransparency = Layer.Transparency
+		Shadow.BorderSizePixel = 0
+		Shadow.Active = false
+		Shadow.ZIndex = Icon.ZIndex + 9
+
+		local ShadowCorner = Instance.new("UICorner")
+		ShadowCorner.CornerRadius = UDim.new(1, 0)
+		ShadowCorner.Parent = Shadow
+
+		Shadow.Parent = Badge
+
+	end
+
+	-- The red circle.
+	local Face = Instance.new("Frame")
+
+	Face.Name = "Face"
+	Face.AnchorPoint = Vector2.new(0.5, 0.5)
+	Face.Position = UDim2.fromScale(0.5, 0.5)
+	Face.Size = UDim2.fromScale(1, 1)
+	Face.BackgroundColor3 = Legacy2017Badge.Color
+	Face.BackgroundTransparency = 0
+	Face.BorderSizePixel = 0
+	Face.Active = false
+	Face.ZIndex = Icon.ZIndex + 10
+
 	local Corner = Instance.new("UICorner")
 	Corner.CornerRadius = UDim.new(1, 0)
-	Corner.Parent = Badge
+	Corner.Parent = Face
+
+	Face.Parent = Badge
 
 	local Label = Instance.new("TextLabel")
 
@@ -4514,7 +4590,7 @@ local MakeLegacy2017Badge = function(Icon, Name)
 	Label.TextXAlignment = Enum.TextXAlignment.Center
 	Label.TextYAlignment = Enum.TextYAlignment.Center
 	Label.ZIndex = Icon.ZIndex + 11
-	Label.Parent = Badge
+	Label.Parent = Face
 
 	-- The badge hangs over the icon's edge: don't let anything crop it.
 	local Ancestor = Icon
@@ -5421,6 +5497,217 @@ task.spawn(function()
 		end
 
 	end)
+
+end)
+
+
+-- ONE MENU AT A TIME
+--
+-- In 2019 the core menus were mutually exclusive: opening the ESC menu
+-- closed the emote wheel and hid the chat window, and focusing the chat
+-- bar closed the emote wheel. Here the emote wheel and the chat window
+-- stayed open behind the menu (and behind the Leave / Reset pages).
+--
+--	* Menu opens: the emote wheel closes, and the chat window hides
+--	  until the menu closes (then it comes back if it was open).
+--	* The emote wheel can't be opened while the menu is open.
+--	* Typing in the chat bar closes the emote wheel.
+
+local CLOSE_EMOTES_WHEN_MENU_OPENS = true
+local HIDE_CHAT_WHILE_MENU_OPEN = true
+local CLOSE_EMOTES_WHEN_CHATTING = true
+
+task.spawn(function()
+
+	if not (CLOSE_EMOTES_WHEN_MENU_OPENS or HIDE_CHAT_WHILE_MENU_OPEN or CLOSE_EMOTES_WHEN_CHATTING) then
+		return
+	end
+
+	local GuiService = game:GetService("GuiService")
+
+	local ChatModule
+
+	task.spawn(function()
+
+		pcall(function()
+
+			local Modules = LegacyGui:WaitForChild("Modules", 15)
+			local ChatScript = Modules and Modules:WaitForChild("Chat", 15)
+
+			if not ChatScript then
+				return
+			end
+
+			local Result = Suite.require(ChatScript)
+
+			if typeof(Result) == "table" and Result.GetVisibility and Result.SetVisible then
+				ChatModule = Result
+			end
+
+		end)
+
+	end)
+
+	-- Is the ESC menu on screen? Its own flag when it keeps one, and
+	-- otherwise whether its shield (the dark layer behind its pages) shows.
+	local Shield
+
+	local FindShield = function()
+
+		for _, Root in ipairs({ LegacyGui, CoreGui:FindFirstChild("NewRobloxGui"), RobloxGui }) do
+
+			if typeof(Root) == "Instance" then
+
+				local Found = Root:FindFirstChild("SettingsShield", true)
+
+				if Found and Found:IsA("GuiObject") then
+					return Found
+				end
+
+			end
+
+		end
+
+	end
+
+	local ShieldShown = function()
+
+		if not (Shield and Shield.Parent) then
+			return false
+		end
+
+		local Current = Shield
+
+		while Current do
+
+			if Current:IsA("GuiObject") and not Current.Visible then
+				return false
+			end
+
+			if Current:IsA("ScreenGui") and not Current.Enabled then
+				return false
+			end
+
+			Current = Current.Parent
+
+		end
+
+		local Position, Size = Shield.AbsolutePosition, Shield.AbsoluteSize
+		local Camera = workspace.CurrentCamera
+		local Screen = Camera and Camera.ViewportSize or Vector2.new(1, 1)
+
+		return Size.X > 0 and Size.Y > 0
+			and Position.X < Screen.X and Position.X + Size.X > 0
+
+	end
+
+	local MenuIsOpen = function()
+
+		local Open = false
+
+		pcall(function()
+			Open = GuiService.MenuIsOpen == true
+		end)
+
+		return Open or ShieldShown()
+
+	end
+
+	local EmotesOpen = function()
+
+		local Open = false
+
+		pcall(function()
+			Open = GuiService:GetEmotesMenuOpen()
+		end)
+
+		return Open
+
+	end
+
+	local CloseEmotes = function()
+
+		pcall(function()
+			GuiService:SetEmotesMenuOpen(false)
+		end)
+
+	end
+
+	local ChatBarFocused = function()
+
+		local Box = UserInputService:GetFocusedTextBox()
+
+		if not Box then
+			return false
+		end
+
+		local Name = Box.Name:lower()
+		local ParentName = Box.Parent and Box.Parent.Name:lower() or ""
+
+		return Name:find("chat") ~= nil
+			or ParentName:find("chat") ~= nil
+			or Name:find("input") ~= nil
+
+	end
+
+	local WasOpen = false
+	local ChatWasShown = false
+	local LastFind = -math.huge
+
+	while true do
+
+		if not (Shield and Shield.Parent) and os.clock() - LastFind > 2 then
+			LastFind = os.clock()
+			Shield = FindShield()
+		end
+
+		local Open = MenuIsOpen()
+
+		if Open and not WasOpen then
+
+			print("[Legacy] menu opened: closing the emote wheel / hiding the chat")
+
+			if HIDE_CHAT_WHILE_MENU_OPEN and ChatModule then
+
+				pcall(function()
+
+					ChatWasShown = ChatModule:GetVisibility() == true
+
+					if ChatWasShown then
+						ChatModule:SetVisible(false)
+					end
+
+				end)
+
+			end
+
+		elseif WasOpen and not Open then
+
+			if HIDE_CHAT_WHILE_MENU_OPEN and ChatModule and ChatWasShown then
+
+				pcall(function()
+					ChatModule:SetVisible(true)
+				end)
+
+			end
+
+			ChatWasShown = false
+
+		end
+
+		WasOpen = Open
+
+		if Open and CLOSE_EMOTES_WHEN_MENU_OPENS and EmotesOpen() then
+			CloseEmotes()
+		end
+
+		if CLOSE_EMOTES_WHEN_CHATTING and ChatBarFocused() and EmotesOpen() then
+			CloseEmotes()
+		end
+
+		task.wait(0.1)
+
+	end
 
 end)
 
