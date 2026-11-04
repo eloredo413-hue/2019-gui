@@ -4012,6 +4012,54 @@ task.spawn(function()
 					Press(Parts, Original)
 				end)
 
+				-- Flashes blue while it is pressed, like the menu's own
+				-- buttons (so "Don't Leave" / "Don't Reset" go blue too),
+				-- and stays blue a moment after a quick tap so it shows.
+				if Copy:IsA("ImageButton") then
+
+					local Normal = Copy.Image
+					local Token = 0
+					local PressedAt = 0
+
+					local IsPointer = function(Input)
+						return Input.UserInputType == Enum.UserInputType.Touch
+							or Input.UserInputType == Enum.UserInputType.MouseButton1
+					end
+
+					local Release = function()
+
+						local Mine = Token
+
+						task.delay(math.max(0, 0.2 - (os.clock() - PressedAt)), function()
+							if Token == Mine then
+								SetIfDifferent(Copy, "Image", Normal)
+							end
+						end)
+
+					end
+
+					Copy.InputBegan:Connect(function(Input)
+
+						if IsPointer(Input) then
+							Token = Token + 1
+							PressedAt = os.clock()
+							SetIfDifferent(Copy, "Image", BlueButton)
+						end
+
+					end)
+
+					Copy.InputEnded:Connect(function(Input)
+
+						if IsPointer(Input) then
+							Release()
+						end
+
+					end)
+
+					Copy.MouseLeave:Connect(Release)
+
+				end
+
 				table.insert(Buttons, Copy)
 
 			end
@@ -4504,16 +4552,19 @@ local Legacy2017Badge = {
 	TextWidth = 0.86, -- room for "99+" before it shrinks
 	TextCenterY = 0.39, -- the 2017 number sits a little above the middle
 
-	-- The 2017 drop shadow (read off the recording): soft, about 5 px
-	-- wide, strongest to the bottom-left and nearly gone at the top.
-	-- Three stacked soft circles: size (of the badge), how see-through.
+	-- The 2017 drop shadow (compared with the 2017 crop): not an outline
+	-- but a wide, very soft halo that sits mostly underneath the circle
+	-- and fades out about 7 px below it. Five stacked circles, each
+	-- a little bigger and fainter: size (of the badge), see-through.
 	ShadowLayers = {
-		{ Size = 1.28, Transparency = 0.94 },
-		{ Size = 1.16, Transparency = 0.88 },
-		{ Size = 1.06, Transparency = 0.80 },
+		{ Size = 1.02, Transparency = 0.93 },
+		{ Size = 1.06, Transparency = 0.94 },
+		{ Size = 1.11, Transparency = 0.95 },
+		{ Size = 1.17, Transparency = 0.96 },
+		{ Size = 1.24, Transparency = 0.97 },
 	},
-	ShadowOffsetX = -0.03, -- of the badge's size
-	ShadowOffsetY = 0.05,
+	ShadowOffsetX = -0.02, -- of the badge's size
+	ShadowOffsetY = 0.06,
 }
 
 local MakeLegacy2017Badge = function(Icon, Name)
