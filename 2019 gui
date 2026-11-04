@@ -3419,13 +3419,21 @@ local MOBILE_LAYOUT_LIKE_2021 = true
 local MobileLayout = {
 	QuestionCenterY = 0.311, -- middle of the question line
 	QuestionHeight = 0.12,
-	QuestionTextSize = 0.0676,
+	QuestionTextSize = 0.0515, -- only used if the text can't be measured
 	ButtonTop = 0.4565,
 	ButtonWidth = 0.5315,
 	ButtonHeight = 0.1148,
 	ButtonGap = 0.1361, -- space between the two buttons
-	ButtonTextSize = 0.048,
+	ButtonTextSize = 0.0375, -- only used if the text can't be measured
 	MaxScreenWidth = 0.92, -- never wider than this part of the screen
+
+	-- The text is sized so it is as wide as in the 2021 images (fractions
+	-- of the screen height): "Are you sure you want to leave the game?"
+	-- is 1052 px wide and "Leave" 104 px on a 1080 px tall screen.
+	QuestionSample = "Are you sure you want to leave the game?",
+	QuestionSampleWidth = 0.974,
+	ButtonSample = "Leave",
+	ButtonSampleWidth = 0.0963,
 }
 
 task.spawn(function()
@@ -4082,6 +4090,82 @@ task.spawn(function()
 
 	end
 
+	local TextService = game:GetService("TextService")
+
+	-- The biggest whole TextSize at which Text is no wider than Width.
+	local FitSize = function(Text, Font, Width)
+
+		local Low, High = 8, 120
+
+		while Low < High do
+
+			local Mid = math.ceil((Low + High) / 2)
+
+			local Success, Bounds = pcall(
+				TextService.GetTextSize,
+				TextService,
+				Text,
+				Mid,
+				Font,
+				Vector2.new(10000, 10000)
+			)
+
+			if not Success then
+				return nil
+			end
+
+			if Bounds.X > Width then
+				High = Mid - 1
+			else
+				Low = Mid
+			end
+
+		end
+
+		return Low
+
+	end
+
+	local Fitted = {}
+
+	local TextSizes = function(Parts, H)
+
+		local L = MobileLayout
+		local Key = tostring(H)
+
+		if Fitted[Key] then
+			return Fitted[Key][1], Fitted[Key][2]
+		end
+
+		local QuestionFont, ButtonFont = Enum.Font.SourceSansBold, Enum.Font.SourceSansBold
+
+		pcall(function()
+			QuestionFont = Parts.question.Font
+		end)
+
+		pcall(function()
+			for _, Child in ipairs(Parts.confirm:GetDescendants()) do
+				if Child:IsA("TextLabel") and Child.Text ~= "" then
+					ButtonFont = Child.Font
+					break
+				end
+			end
+		end)
+
+		local Question = FitSize(L.QuestionSample, QuestionFont, H * L.QuestionSampleWidth)
+			or math.floor(H * L.QuestionTextSize + 0.5)
+
+		local Button = FitSize(L.ButtonSample, ButtonFont, H * L.ButtonSampleWidth)
+			or math.floor(H * L.ButtonTextSize + 0.5)
+
+		Fitted[Key] = { Question, Button }
+
+		print("[Legacy] 2021 page text sizes for a screen " .. Key .. " tall: question " .. Question .. ", buttons " .. Button)
+
+		return Question, Button
+
+	end
+
 	local LayOut = function(Parts, Copy)
 
 		local Camera = workspace.CurrentCamera
@@ -4116,7 +4200,9 @@ task.spawn(function()
 			math.floor(H * L.QuestionCenterY - QuestionHeight / 2)
 		))
 		SetIfDifferent(Copy.Question, "Text", Parts.question.Text)
-		SetIfDifferent(Copy.Question, "TextSize", math.clamp(math.floor(H * L.QuestionTextSize + 0.5), 1, 100))
+		local QuestionSize, ButtonSize = TextSizes(Parts, H)
+
+		SetIfDifferent(Copy.Question, "TextSize", math.clamp(QuestionSize, 1, 100))
 
 		-- Buttons: wide, side by side, centred under the question.
 		local ButtonWidth = H * L.ButtonWidth
@@ -4135,7 +4221,7 @@ task.spawn(function()
 
 		local Left = (W - Total) / 2
 		local Top = H * L.ButtonTop
-		local TextSize = math.clamp(math.floor(H * L.ButtonTextSize + 0.5), 1, 100)
+		local TextSize = math.clamp(ButtonSize, 1, 100)
 
 		for Index, Button in ipairs(Copy.Buttons) do
 
@@ -4383,14 +4469,14 @@ local NativeChatCounter = false
 -- is drawn at.
 -- Measured against the 2017 top bar on a phone, next to this one.
 local Legacy2017Badge = {
-	Color = Color3.fromRGB(229, 86, 83),
+	Color = Color3.fromRGB(246, 66, 74), -- read off the 2017 recording
 	TextColor = Color3.new(1, 1, 1),
 	Size = 0.478, -- of the icon's width
 	CenterX = 0.902, -- of the icon's width, from its left edge
 	CenterY = 0.16, -- of the icon's height, from its top edge
 	TextHeight = 1.07, -- number box, of the circle (the number is ~55% of it)
 	TextWidth = 0.86, -- room for "99+" before it shrinks
-	TextCenterY = 0.42, -- the 2017 number sits a little above the middle
+	TextCenterY = 0.39, -- the 2017 number sits a little above the middle
 }
 
 local MakeLegacy2017Badge = function(Icon, Name)
