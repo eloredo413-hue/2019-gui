@@ -3392,43 +3392,39 @@ end)
 
 -- LEAVE / RESET CONFIRMATION PAGES
 --
--- Ported from the 2021 gui. The "Are you sure you want to leave the
--- game?" page and the "Are you sure you want to reset your character?"
--- page of the ESC menu are built separately and come out different:
--- the Leave page sits lower, with its buttons closer together. The
--- Reset page is the one to follow, so the Leave page copies its layout
--- (page size, question, button positions and sizes), and the Leave and
--- Reset buttons end up in the same spot as in the 2021 gui.
--- The first button of each page ("Leave", "Reset") is kept blue,
--- whatever the menu does to it (hover, selection, the touch-screen
--- clean-up that turns blue buttons grey again).
+-- The "Are you sure you want to leave the game?" and "Are you sure you
+-- want to reset your character?" pages of the ESC menu.
 --
--- The pages are found by their text, so this does not depend on how
--- the menu names them. A page that is not on screen is unparented by
--- the menu; it is still found through the menu's module records, or
--- the nil instances.
-
+-- On a touch screen (phones / tablets) they look like the 2021 gui on
+-- a phone: the question about a third of the way down, the blue
+-- "Leave" / "Reset" button and the grey "Don't" button side by side
+-- under it, wide and centred. Changing the menu's own question and
+-- buttons does not work there (the menu keeps its own layout), so a
+-- copy of them is drawn on top in the 2021 spot, sliding in and out
+-- with the page, while the menu's own ones are hidden. Tapping a copied
+-- button runs the menu's real button, so they do exactly what they did
+-- before.
 --
--- On a touch screen (phones / tablets) both pages are laid out like
--- the 2021 gui on mobile instead: the question near the top third of
--- the screen, the two wide buttons side by side under it, centred.
--- Sizes are fractions of the screen height (measured from the 2021
--- gui on a phone), so it looks the same on every screen.
+-- On PC the Leave page copies the Reset page's layout, and the first
+-- button of each page stays blue.
+--
+-- The pages are found by their text, wherever the menu keeps them.
 
 local MATCH_LEAVE_TO_RESET = true
 local FIRST_BUTTON_BLUE = true
 local MOBILE_LAYOUT_LIKE_2021 = true
 
--- 2021 mobile layout, as fractions of the screen height.
+-- 2021 mobile layout, as fractions of the screen height (measured on
+-- the 2021 gui on a 2340x1080 phone).
 local MobileLayout = {
-	QuestionCenterY = 0.314, -- middle of the question line
+	QuestionCenterY = 0.311, -- middle of the question line
 	QuestionHeight = 0.12,
-	QuestionTextSize = 0.062,
-	ButtonTop = 0.456,
-	ButtonWidth = 0.531,
-	ButtonHeight = 0.115,
-	ButtonGap = 0.135, -- space between the two buttons
-	ButtonTextSize = 0.044,
+	QuestionTextSize = 0.0676,
+	ButtonTop = 0.4565,
+	ButtonWidth = 0.5315,
+	ButtonHeight = 0.1148,
+	ButtonGap = 0.1361, -- space between the two buttons
+	ButtonTextSize = 0.048,
 	MaxScreenWidth = 0.92, -- never wider than this part of the screen
 }
 
@@ -3438,12 +3434,29 @@ task.spawn(function()
 		return
 	end
 
+	local GuiService = game:GetService("GuiService")
+
+	local VirtualInputManager
+
+	pcall(function()
+		VirtualInputManager = game:GetService("VirtualInputManager")
+	end)
+
 	local BlueButton = "rbxasset://textures/ui/Settings/MenuBarAssets/MenuButtonSelected.png"
+	local GreyButton = "rbxasset://textures/ui/Settings/MenuBarAssets/MenuButton.png"
 
 	local Questions = {
 		leave = { question = "leave the game", confirm = "leave" },
 		reset = { question = "reset your character", confirm = "reset" },
 	}
+
+	local SetIfDifferent = function(Object, Property, Value)
+		pcall(function()
+			if Object[Property] ~= Value then
+				Object[Property] = Value
+			end
+		end)
+	end
 
 	local TextOf = function(Object)
 
@@ -3459,37 +3472,34 @@ task.spawn(function()
 
 	end
 
-	local IsQuestion = function(Object, Kind)
+	local KindOf = function(Object)
 
 		if not Object:IsA("TextLabel") then
-			return false
+			return nil
 		end
 
 		local Text = TextOf(Object)
 
-		return Text ~= nil and Text:find(Questions[Kind].question, 1, true) ~= nil
+		if not Text then
+			return nil
+		end
 
-	end
-
-	-- The question, the page it sits on, and the two buttons.
-	local FindParts = function(Root, Kind)
-
-		local Question
-
-		if IsQuestion(Root, Kind) then
-			Question = Root
-		else
-			for _, Object in ipairs(Root:GetDescendants()) do
-				if IsQuestion(Object, Kind) then
-					Question = Object
-					break
-				end
+		for Kind, Info in pairs(Questions) do
+			if Text:find(Info.question, 1, true) then
+				return Kind
 			end
 		end
 
-		local Page = Question and Question.Parent
+		return nil
 
-		if not Page then
+	end
+
+	-- The page a question sits on, and its two buttons.
+	local FindParts = function(Question, Kind)
+
+		local Page = Question.Parent
+
+		if not (Page and Page:IsA("GuiBase2d")) then
 			return nil
 		end
 
@@ -3534,35 +3544,110 @@ task.spawn(function()
 			return nil
 		end
 
-		return { page = Page, question = Question, confirm = Confirm, cancel = Cancel }
+		return { Kind = Kind, page = Page, question = Question, confirm = Confirm, cancel = Cancel }
 
 	end
 
-	local StillValid = function(Parts, Kind)
-		return Parts ~= nil
-			and Parts.question.Parent == Parts.page
-			and IsQuestion(Parts.question, Kind)
+	local StillValid = function(Parts)
+		return Parts.question.Parent == Parts.page
+			and KindOf(Parts.question) == Parts.Kind
 			and Parts.confirm:IsDescendantOf(Parts.page)
 	end
 
-	-- Places to look: the legacy gui, the menu's
-	-- modules (the pages and the hub keep their page frames), and the
-	-- objects with no parent.
-	local SearchRoots = function(IncludeNil)
+	--========================================================*
+	-- OVERLAY (touch screens): the 2021 copy is drawn here
+	--========================================================*
 
-		local Roots = {}
+	local Overlay = Instance.new("ScreenGui")
 
-		local Add = function(Object)
-			if typeof(Object) == "Instance" and Object.Parent then
-				table.insert(Roots, Object)
+	Overlay.Name = "Legacy2021ConfirmPage"
+	Overlay.ResetOnSpawn = false
+	Overlay.IgnoreGuiInset = true
+	Overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	Overlay.DisplayOrder = 1000
+	Overlay.Enabled = false
+
+	pcall(function()
+		Overlay.ScreenInsets = Enum.ScreenInsets.None
+	end)
+
+	pcall(function()
+		Overlay.Parent = CoreGui
+	end)
+
+	if not Overlay.Parent then
+		pcall(function()
+			Overlay.Parent = gethui and gethui()
+		end)
+	end
+
+	if not Overlay.Parent then
+		pcall(function()
+			Overlay.Parent = Players.LocalPlayer:WaitForChild("PlayerGui", 10)
+		end)
+	end
+
+	--========================================================*
+	-- FINDING THE PAGES
+	--========================================================*
+
+	-- [question label] = { Kind, page, question, confirm, cancel }
+	local Tracked = {}
+
+	local Consider = function(Object)
+
+		if Tracked[Object] or not Object:IsA("TextLabel") or Object:IsDescendantOf(Overlay) then
+			return
+		end
+
+		local Kind = KindOf(Object)
+
+		if not Kind then
+			return
+		end
+
+		local Success, Parts = pcall(FindParts, Object, Kind)
+
+		if Success and Parts then
+			Tracked[Object] = Parts
+			print("[Legacy] " .. Kind .. " page found:", Parts.page:GetFullName())
+		end
+
+	end
+
+	local Scan = function(Root)
+
+		if typeof(Root) ~= "Instance" then
+			return
+		end
+
+		Consider(Root)
+
+		for _, Object in ipairs(Root:GetDescendants()) do
+			if Object:IsA("TextLabel") then
+				Consider(Object)
 			end
 		end
 
-		if typeof(LegacyGui) == "Instance" then
-			Add(LegacyGui)
+	end
+
+	local Have = function(Kind)
+
+		for _, Parts in pairs(Tracked) do
+			if Parts.Kind == Kind then
+				return true
+			end
 		end
 
-		Add(CoreGui:FindFirstChild("NewRobloxGui"))
+		return false
+
+	end
+
+	-- Pages the menu keeps off screen: its module records, and the
+	-- objects with no parent.
+	local HiddenRoots = function()
+
+		local Roots = {}
 
 		pcall(function()
 
@@ -3610,7 +3695,7 @@ task.spawn(function()
 
 		pcall(function()
 
-			if not IncludeNil or type(getnilinstances) ~= "function" then
+			if type(getnilinstances) ~= "function" then
 				return
 			end
 
@@ -3626,230 +3711,412 @@ task.spawn(function()
 
 	end
 
-	local CopyProps = function(From, To, Props)
+	-- Right away when a page is built or put on screen.
+	local Watch = function(Root)
 
-		for _, Prop in ipairs(Props) do
+		if typeof(Root) ~= "Instance" then
+			return
+		end
 
-			pcall(function()
+		pcall(function()
 
-				local Value = From[Prop]
+			Root.DescendantAdded:Connect(function(Object)
 
-				if To[Prop] ~= Value then
-					To[Prop] = Value
+				if Object:IsA("TextLabel") then
+					Consider(Object)
+					task.defer(Consider, Object)
+					task.delay(0.25, Consider, Object)
 				end
 
 			end)
 
-		end
-
-	end
-
-	local MakeBlue = function(Button)
-
-		pcall(function()
-			if Button:IsA("ImageButton") and Button.Image ~= BlueButton then
-				Button.Image = BlueButton
-			end
 		end)
 
 	end
 
-	local MatchLeaveToReset = function(Leave, Reset)
+	Watch(CoreGui)
 
-		CopyProps(Reset.page, Leave.page, { "Size" })
+	if typeof(LegacyGui) == "Instance" and not LegacyGui:IsDescendantOf(CoreGui) then
+		Watch(LegacyGui)
+	end
 
-		CopyProps(Reset.question, Leave.question, {
-			"AnchorPoint", "Position", "Size", "TextSize", "TextScaled", "TextWrapped",
-			"TextXAlignment", "TextYAlignment",
-		})
+	--========================================================*
+	-- THE 2021 COPY
+	--========================================================*
 
-		for _, Pair in ipairs({ { Leave.confirm, Reset.confirm }, { Leave.cancel, Reset.cancel } }) do
+	local Copies = {} -- [Parts] = { Holder, Question, Buttons }
+	local Saved = {} -- [Parts] = the menu's own look, while hidden
 
-			local Mine, Theirs = Pair[1], Pair[2]
+	local StripConstraints = function(Object)
 
-			if Mine and Theirs then
+		for _, Descendant in ipairs(Object:GetDescendants()) do
 
-				-- The buttons hang off the same element as on the Reset page.
-				if Theirs.Parent == Reset.question and Mine.Parent ~= Leave.question then
-					Mine.Parent = Leave.question
-				elseif Theirs.Parent == Reset.page and Mine.Parent ~= Leave.page then
-					Mine.Parent = Leave.page
-				end
-
-				CopyProps(Theirs, Mine, { "AnchorPoint", "Position", "Size" })
-
+			if
+				Descendant:IsA("UISizeConstraint")
+				or Descendant:IsA("UIAspectRatioConstraint")
+				or Descendant:IsA("UITextSizeConstraint")
+				or Descendant:IsA("UIScale")
+				or Descendant:IsA("LuaSourceContainer")
+			then
+				Descendant:Destroy()
 			end
 
 		end
 
 	end
 
-	local GuiService = game:GetService("GuiService")
+	-- Used only if the menu's button can't be copied.
+	local BuildButton = function(Text, Blue)
 
-	-- UIScale objects above an element scale its children (their
-	-- position, size and text): undo that so the result is in pixels.
-	local ChildScale = function(Parent)
+		local Button = Instance.new("ImageButton")
 
-		local Scale = 1
-		local Current = Parent
+		Button.BackgroundTransparency = 1
+		Button.Image = Blue and BlueButton or GreyButton
+		Button.ScaleType = Enum.ScaleType.Slice
+		Button.SliceCenter = Rect.new(8, 6, 46, 44)
 
-		while Current do
+		local Label = Instance.new("TextLabel")
 
-			local Scaler = Current:FindFirstChildOfClass("UIScale")
+		Label.BackgroundTransparency = 1
+		Label.Size = UDim2.new(1, 0, 1, -8)
+		Label.Font = Enum.Font.SourceSansBold
+		Label.TextColor3 = Color3.new(1, 1, 1)
+		Label.Text = Text
+		Label.Parent = Button
 
-			if Scaler and Scaler.Scale > 0 then
-				Scale = Scale * Scaler.Scale
+		return Button
+
+	end
+
+	-- Run the menu's real button, as if it was tapped.
+	local Fire = function(Button)
+
+		for _, Name in ipairs({ "MouseButton1Click", "Activated" }) do
+
+			local Fired = false
+
+			if getconnections then
+
+				pcall(function()
+
+					for _, Connection in ipairs(getconnections(Button[Name])) do
+
+						if Connection.Function then
+							task.spawn(Connection.Function)
+							Fired = true
+						elseif Connection.Fire then
+							task.spawn(pcall, Connection.Fire, Connection)
+							Fired = true
+						end
+
+					end
+
+				end)
+
+			elseif firesignal then
+
+				Fired = pcall(firesignal, Button[Name])
+
 			end
 
-			if Current:IsA("LayerCollector") then
-				break
+			if Fired then
+				return true
+			end
+
+		end
+
+		return false
+
+	end
+
+	local Restore = function(Parts)
+
+		local Look = Saved[Parts]
+
+		if not Look then
+			return
+		end
+
+		Saved[Parts] = nil
+
+		SetIfDifferent(Parts.question, "TextTransparency", Look.TextTransparency)
+		SetIfDifferent(Parts.question, "TextStrokeTransparency", Look.TextStrokeTransparency)
+		SetIfDifferent(Parts.confirm, "Visible", true)
+
+		if Parts.cancel then
+			SetIfDifferent(Parts.cancel, "Visible", true)
+		end
+
+	end
+
+	local HideOriginals = function(Parts)
+
+		if not Saved[Parts] then
+			Saved[Parts] = {
+				TextTransparency = Parts.question.TextTransparency,
+				TextStrokeTransparency = Parts.question.TextStrokeTransparency,
+			}
+		end
+
+		SetIfDifferent(Parts.question, "TextTransparency", 1)
+		SetIfDifferent(Parts.question, "TextStrokeTransparency", 1)
+		SetIfDifferent(Parts.confirm, "Visible", false)
+
+		if Parts.cancel then
+			SetIfDifferent(Parts.cancel, "Visible", false)
+		end
+
+	end
+
+	local LastPress = 0
+	local ShowRealUntil = 0
+
+	local Press = function(Parts, Original)
+
+		if os.clock() - LastPress < 0.4 then
+			return
+		end
+
+		LastPress = os.clock()
+
+		if Fire(Original) then
+			return
+		end
+
+		-- No way to run it directly: show the real button for a moment
+		-- and tap it.
+		if not VirtualInputManager then
+			warn("[Legacy] can't press the menu's button on this executor")
+			return
+		end
+
+		ShowRealUntil = os.clock() + 0.5
+
+		task.spawn(function()
+
+			Restore(Parts)
+
+			RunService.RenderStepped:Wait()
+
+			local Root = Original:FindFirstAncestorWhichIsA("ScreenGui")
+			local Inset = (Root and not Root.IgnoreGuiInset) and GuiService:GetGuiInset() or Vector2.zero
+			local Center = Original.AbsolutePosition + Original.AbsoluteSize / 2 + Inset
+
+			pcall(function()
+				VirtualInputManager:SendMouseButtonEvent(Center.X, Center.Y, 0, true, game, 0)
+				task.wait(0.05)
+				VirtualInputManager:SendMouseButtonEvent(Center.X, Center.Y, 0, false, game, 0)
+			end)
+
+		end)
+
+	end
+
+	local MakeCopy = function(Parts)
+
+		local Holder = Instance.new("Frame")
+
+		Holder.Name = Parts.Kind
+		Holder.BackgroundTransparency = 1
+		Holder.Size = UDim2.fromScale(1, 1)
+		Holder.Active = false
+		Holder.Visible = false
+		Holder.Parent = Overlay
+
+		local Question = Instance.new("TextLabel")
+
+		Question.Name = "Question"
+		Question.BackgroundTransparency = 1
+		Question.Active = false
+		Question.Font = Enum.Font.SourceSansBold
+		Question.TextColor3 = Color3.new(1, 1, 1)
+		Question.TextWrapped = true
+		Question.TextScaled = false
+		Question.TextXAlignment = Enum.TextXAlignment.Center
+		Question.TextYAlignment = Enum.TextYAlignment.Center
+
+		pcall(function()
+			Question.FontFace = Parts.question.FontFace
+		end)
+
+		pcall(function()
+			Question.TextColor3 = Parts.question.TextColor3
+		end)
+
+		Question.Parent = Holder
+
+		local Buttons = {}
+
+		for Index, Original in ipairs({ Parts.confirm, Parts.cancel or false }) do
+
+			if Original then
+
+				local Blue = Index == 1 and FIRST_BUTTON_BLUE
+
+				local Success, Copy = pcall(function()
+					return Original:Clone()
+				end)
+
+				if Success and Copy then
+
+					StripConstraints(Copy)
+
+					if Copy:IsA("ImageButton") then
+						if Blue then
+							Copy.Image = BlueButton
+						elseif Copy.Image == BlueButton then
+							Copy.Image = GreyButton
+						end
+					end
+
+				else
+
+					local Text = TextOf(Original) or ""
+
+					for _, Child in ipairs(Original:GetDescendants()) do
+						if Child:IsA("TextLabel") and Child.Text ~= "" then
+							Text = Child.Text
+							break
+						end
+					end
+
+					Copy = BuildButton(Text, Blue)
+
+				end
+
+				Copy.Name = Index == 1 and "Confirm" or "Cancel"
+				Copy.AnchorPoint = Vector2.zero
+				Copy.Visible = true
+				Copy.Active = true
+
+				pcall(function()
+					Copy.Selectable = false
+				end)
+
+				Copy.Parent = Holder
+
+				Copy.Activated:Connect(function()
+					Press(Parts, Original)
+				end)
+
+				table.insert(Buttons, Copy)
+
+			end
+
+		end
+
+		return { Holder = Holder, Question = Question, Buttons = Buttons }
+
+	end
+
+	local IsOnScreen = function(Parts)
+
+		local Question = Parts.question
+		local Root = Question:FindFirstAncestorWhichIsA("LayerCollector")
+
+		if not (Root and Root:IsDescendantOf(game)) then
+			return false
+		end
+
+		if Root:IsA("ScreenGui") and not Root.Enabled then
+			return false
+		end
+
+		local Current = Question
+
+		while Current and Current ~= Root do
+
+			if Current:IsA("GuiObject") and not Current.Visible then
+				return false
 			end
 
 			Current = Current.Parent
 
 		end
 
-		return Scale
+		local Camera = workspace.CurrentCamera
+		local Screen = Camera and Camera.ViewportSize or Vector2.new(1, 1)
+		local Position, Size = Question.AbsolutePosition, Question.AbsoluteSize
+
+		return Size.X > 0 and Size.Y > 0
+			and Position.X + Size.X > 0 and Position.X < Screen.X
+			and Position.Y + Size.Y > 0 and Position.Y < Screen.Y
 
 	end
 
-	local SetIfDifferent = function(Object, Property, Value)
-		pcall(function()
-			if Object[Property] ~= Value then
-				Object[Property] = Value
-			end
-		end)
-	end
-
-	-- Where each element was put this frame. The buttons sit inside the
-	-- question: they are placed from where the question is going, not
-	-- from where it was drawn last frame, so they never trail behind it.
-	local Planned = setmetatable({}, { __mode = "k" })
-
-	-- Put an element at a spot on the screen, in pixels from the
-	-- top-left corner of the screen, whatever its parent is.
-	local Place = function(Object, Left, Top, Width, Height)
-
-		local Parent = Object.Parent
-
-		if not (Parent and Parent:IsA("GuiBase2d")) then
-			return
-		end
-
-		local InsetX, InsetY = 0, 0
-		local Root = Object:FindFirstAncestorWhichIsA("LayerCollector")
-
-		if Root and Root:IsA("ScreenGui") and not Root.IgnoreGuiInset then
-			local Inset = GuiService:GetGuiInset()
-			InsetX, InsetY = Inset.X, Inset.Y
-		end
-
-		local Scale = ChildScale(Parent)
-		local Origin = Planned[Parent] or Parent.AbsolutePosition
-
-		local Round = function(Value)
-			return math.floor(Value / Scale + 0.5)
-		end
-
-		SetIfDifferent(Object, "AnchorPoint", Vector2.new(0, 0))
-		SetIfDifferent(Object, "Position", UDim2.fromOffset(
-			Round(Left - InsetX - Origin.X),
-			Round(Top - InsetY - Origin.Y)
-		))
-		SetIfDifferent(Object, "Size", UDim2.fromOffset(Round(Width), Round(Height)))
-
-		Planned[Object] = Vector2.new(Left - InsetX, Top - InsetY)
-
-	end
-
-	local SetTextSize = function(Label, Pixels)
-		local Size = math.clamp(math.floor(Pixels / ChildScale(Label.Parent) + 0.5), 1, 100)
-		SetIfDifferent(Label, "TextScaled", false)
-		SetIfDifferent(Label, "TextSize", Size)
-	end
-
-	-- Where each page sits, across its parent, when it is not moving.
-	-- The menu slides pages in and out sideways: the question and
-	-- buttons are placed for the page's resting spot, so they slide in
-	-- with the page and stop in place, instead of sitting still while
-	-- the page moves under them.
-	local RestX = setmetatable({}, { __mode = "k" })
-	local LastX = setmetatable({}, { __mode = "k" })
+	-- How far the page is from where it rests (the menu slides pages in
+	-- and out): the copy is moved by the same amount, so it slides with
+	-- the page and stops in the 2021 spot.
+	local Rest = setmetatable({}, { __mode = "k" })
+	local Last = setmetatable({}, { __mode = "k" })
 	local Still = setmetatable({}, { __mode = "k" })
 
-	local PageOrigin = function(Page, ScreenWidth)
+	local SlideOffset = function(Page, ScreenWidth)
 
-		local Parent = Page.Parent
 		local Position = Page.AbsolutePosition
+		local Parent = Page.Parent
 
-		if not (Parent and Parent:IsA("GuiBase2d")) then
-			return Position
-		end
-
-		local X = Position.X - Parent.AbsolutePosition.X
-
-		if LastX[Page] and math.abs(X - LastX[Page]) < 0.5 then
+		if Last[Page] and (Position - Last[Page]).Magnitude < 0.5 then
 			Still[Page] = (Still[Page] or 0) + 1
 		else
 			Still[Page] = 0
 		end
 
-		LastX[Page] = X
+		Last[Page] = Position
+
+		local Across =
+			(Parent and Parent:IsA("GuiBase2d"))
+			and Position.X - Parent.AbsolutePosition.X
+			or 0
 
 		-- Not moving for a few frames, and on screen: that's its rest.
-		if Still[Page] >= 5 and math.abs(X) < ScreenWidth * 0.25 then
-			RestX[Page] = X
+		if Still[Page] >= 5 and math.abs(Across) < ScreenWidth * 0.25 then
+			Rest[Page] = Position
 		end
 
-		return Vector2.new(Parent.AbsolutePosition.X + (RestX[Page] or 0), Position.Y)
+		if Rest[Page] then
+			return Position - Rest[Page]
+		end
+
+		return Vector2.new(Across, 0)
 
 	end
 
-	local LayOutForMobile = function(Parts)
+	local LayOut = function(Parts, Copy)
 
 		local Camera = workspace.CurrentCamera
 
 		if not Camera then
-			return
+			return false
 		end
 
-		local Screen = Camera.ViewportSize
-		local W, H = Screen.X, Screen.Y
+		local W, H = Camera.ViewportSize.X, Camera.ViewportSize.Y
 
 		if W <= 0 or H <= 0 then
-			return
+			return false
+		end
+
+		local Offset = SlideOffset(Parts.page, W)
+
+		if math.abs(Offset.X) >= W or math.abs(Offset.Y) >= H then
+			return false
 		end
 
 		local L = MobileLayout
 
-		-- Both buttons inside the question, so they always move as one
-		-- with it (the Leave page had them in different places, and one
-		-- trailed behind while the page slid in).
-		for _, Button in ipairs({ Parts.confirm, Parts.cancel or false }) do
-			if Button and Button.Parent ~= Parts.question then
-				Button.Parent = Parts.question
-			end
-		end
-
-		Planned[Parts.page] = PageOrigin(Parts.page, W)
+		SetIfDifferent(Copy.Holder, "Position", UDim2.fromOffset(math.floor(Offset.X + 0.5), math.floor(Offset.Y + 0.5)))
 
 		-- Question
 		local QuestionWidth = W * L.MaxScreenWidth
 		local QuestionHeight = H * L.QuestionHeight
 
-		Place(
-			Parts.question,
-			(W - QuestionWidth) / 2,
-			H * L.QuestionCenterY - QuestionHeight / 2,
-			QuestionWidth,
-			QuestionHeight
-		)
-
-		SetIfDifferent(Parts.question, "TextWrapped", true)
-		SetIfDifferent(Parts.question, "ClipsDescendants", false)
-		SetIfDifferent(Parts.question, "TextXAlignment", Enum.TextXAlignment.Center)
-		SetIfDifferent(Parts.question, "TextYAlignment", Enum.TextYAlignment.Center)
-		SetTextSize(Parts.question, H * L.QuestionTextSize)
+		SetIfDifferent(Copy.Question, "Size", UDim2.fromOffset(math.floor(QuestionWidth), math.floor(QuestionHeight)))
+		SetIfDifferent(Copy.Question, "Position", UDim2.fromOffset(
+			math.floor((W - QuestionWidth) / 2),
+			math.floor(H * L.QuestionCenterY - QuestionHeight / 2)
+		))
+		SetIfDifferent(Copy.Question, "Text", Parts.question.Text)
+		SetIfDifferent(Copy.Question, "TextSize", math.clamp(math.floor(H * L.QuestionTextSize + 0.5), 1, 100))
 
 		-- Buttons: wide, side by side, centred under the question.
 		local ButtonWidth = H * L.ButtonWidth
@@ -3868,183 +4135,241 @@ task.spawn(function()
 
 		local Left = (W - Total) / 2
 		local Top = H * L.ButtonTop
+		local TextSize = math.clamp(math.floor(H * L.ButtonTextSize + 0.5), 1, 100)
 
-		for Index, Button in ipairs({ Parts.confirm, Parts.cancel or false }) do
+		for Index, Button in ipairs(Copy.Buttons) do
 
-			if Button then
+			SetIfDifferent(Button, "Position", UDim2.fromOffset(
+				math.floor(Left + (Index - 1) * (ButtonWidth + Gap) + 0.5),
+				math.floor(Top + 0.5)
+			))
+			SetIfDifferent(Button, "Size", UDim2.fromOffset(math.floor(ButtonWidth + 0.5), math.floor(ButtonHeight + 0.5)))
 
-				Place(Button, Left + (Index - 1) * (ButtonWidth + Gap), Top, ButtonWidth, ButtonHeight)
-
-				for _, Child in ipairs(Button:GetDescendants()) do
-					if Child:IsA("TextLabel") and Child.Text ~= "" then
-						SetTextSize(Child, H * L.ButtonTextSize)
-					end
+			for _, Child in ipairs(Button:GetDescendants()) do
+				if Child:IsA("TextLabel") then
+					SetIfDifferent(Child, "TextScaled", false)
+					SetIfDifferent(Child, "TextSize", TextSize)
 				end
+			end
 
-				if Button:IsA("TextButton") and Button.Text ~= "" then
-					SetTextSize(Button, H * L.ButtonTextSize)
-				end
-
+			if Button:IsA("TextButton") and Button.Text ~= "" then
+				SetIfDifferent(Button, "TextScaled", false)
+				SetIfDifferent(Button, "TextSize", TextSize)
 			end
 
 		end
 
-	end
+		-- Just above the menu.
+		local Root = Parts.question:FindFirstAncestorWhichIsA("ScreenGui")
 
-	local Found = { leave = nil, reset = nil }
-
-	local Search = function(Roots)
-
-		for _, Root in ipairs(Roots) do
-
-			for Kind in pairs(Questions) do
-
-				if not Found[Kind] then
-
-					local Success, Parts = pcall(FindParts, Root, Kind)
-
-					if Success and Parts then
-						Found[Kind] = Parts
-						print("[Legacy] " .. Kind .. " page found:", Parts.page:GetFullName())
-					end
-
-				end
-
-			end
-
-			if Found.leave and Found.reset then
-				return
-			end
-
+		if Root then
+			SetIfDifferent(Overlay, "DisplayOrder", Root.DisplayOrder + 1)
 		end
 
-	end
-
-	local Missing = function()
-
-		local Any = false
-
-		for Kind in pairs(Questions) do
-			if not StillValid(Found[Kind], Kind) then
-				Found[Kind] = nil
-				Any = true
-			end
-		end
-
-		return Any
+		return true
 
 	end
 
-	-- The moment a page is built or put on screen, its question shows
-	-- up in the menu's gui: pick it up right away, so the page already
-	-- has its layout the first time it is drawn.
-	local Watch = function(Gui)
+	--========================================================*
+	-- LOOKING FOR THE PAGES
+	--========================================================*
 
-		if typeof(Gui) ~= "Instance" then
-			return
-		end
-
-		Gui.DescendantAdded:Connect(function(Object)
-
-			if not Object:IsA("TextLabel") then
-				return
-			end
-
-			local Check = function()
-				if Object.Parent and Missing() then
-					Search({ Object })
-				end
-			end
-
-			-- Once the rest of the page (the buttons) is in too.
-			task.defer(Check)
-			task.delay(0.1, Check)
-
-		end)
-
-	end
-
-	if typeof(LegacyGui) == "Instance" then
-		Watch(LegacyGui)
-	end
-
+	-- A regular look in case one is missed. The whole CoreGui only a few
+	-- times at the start; the hidden places every 5 seconds until both
+	-- pages are known.
 	task.spawn(function()
 
-		local NewRobloxGui = CoreGui:FindFirstChild("NewRobloxGui") or CoreGui:WaitForChild("NewRobloxGui", 30)
-
-		if NewRobloxGui and NewRobloxGui ~= LegacyGui then
-			Watch(NewRobloxGui)
-		end
-
-	end)
-
-	-- And a regular look in case one is missed. The objects with no
-	-- parent are slow to go through: only every 5 seconds.
-	task.spawn(function()
-
-		local Warned, Started, LastNil = false, os.clock(), 0
+		local Started, LastHidden = os.clock(), -math.huge
+		local FullScans, NextFull = { 0, 5, 15, 30 }, 1
 
 		while true do
 
-			if Missing() then
+			pcall(Scan, LegacyGui)
+			pcall(Scan, CoreGui:FindFirstChild("NewRobloxGui"))
 
-				local IncludeNil = os.clock() - LastNil >= 5
+			if NextFull <= #FullScans and os.clock() - Started >= FullScans[NextFull] then
+				NextFull = NextFull + 1
+				pcall(Scan, CoreGui)
+			end
 
-				if IncludeNil then
-					LastNil = os.clock()
-				end
+			if not (Have("leave") and Have("reset")) and os.clock() - LastHidden >= 5 then
 
-				Search(SearchRoots(IncludeNil))
+				LastHidden = os.clock()
 
-				if not (Found.leave and Found.reset) and not Warned and os.clock() - Started > 30 then
-					Warned = true
-					warn("[Legacy] leave / reset pages not found yet (leave: "
-						.. tostring(Found.leave ~= nil) .. ", reset: " .. tostring(Found.reset ~= nil) .. ")")
+				for _, Root in ipairs(HiddenRoots()) do
+					pcall(Scan, Root)
 				end
 
 			end
 
-			task.wait(0.5)
+			-- Forget pages that are gone.
+			for Question, Parts in pairs(Tracked) do
+
+				if not StillValid(Parts) then
+
+					Restore(Parts)
+
+					if Copies[Parts] then
+						pcall(function()
+							Copies[Parts].Holder:Destroy()
+						end)
+						Copies[Parts] = nil
+					end
+
+					Tracked[Question] = nil
+
+				end
+
+			end
+
+			task.wait(1)
 
 		end
 
 	end)
 
-	-- Every frame, before it is drawn: whatever changed them since is put back.
-	RunService.RenderStepped:Connect(function()
+	--========================================================*
+	-- EVERY FRAME
+	--========================================================*
 
-		local Leave, Reset = Found.leave, Found.reset
-
-		table.clear(Planned)
-
-		if MOBILE_LAYOUT_LIKE_2021 and IsTouchDevice then
-
-			for _, Parts in ipairs({ Leave or false, Reset or false }) do
-				if Parts then
-					pcall(LayOutForMobile, Parts)
+	local CopyProps = function(From, To, Props)
+		for _, Prop in ipairs(Props) do
+			pcall(function()
+				local Value = From[Prop]
+				if To[Prop] ~= Value then
+					To[Prop] = Value
 				end
+			end)
+		end
+	end
+
+	local MakeBlue = function(Button)
+		pcall(function()
+			if Button:IsA("ImageButton") and Button.Image ~= BlueButton then
+				Button.Image = BlueButton
+			end
+		end)
+	end
+
+	local MatchLeaveToReset = function(Leave, Reset)
+
+		CopyProps(Reset.page, Leave.page, { "Size" })
+
+		CopyProps(Reset.question, Leave.question, {
+			"AnchorPoint", "Position", "Size", "TextSize", "TextScaled", "TextWrapped",
+			"TextXAlignment", "TextYAlignment",
+		})
+
+		for _, Pair in ipairs({ { Leave.confirm, Reset.confirm }, { Leave.cancel, Reset.cancel } }) do
+
+			local Mine, Theirs = Pair[1], Pair[2]
+
+			if Mine and Theirs then
+
+				if Theirs.Parent == Reset.question and Mine.Parent ~= Leave.question then
+					Mine.Parent = Leave.question
+				elseif Theirs.Parent == Reset.page and Mine.Parent ~= Leave.page then
+					Mine.Parent = Leave.page
+				end
+
+				CopyProps(Theirs, Mine, { "AnchorPoint", "Position", "Size" })
+
 			end
 
-		elseif MATCH_LEAVE_TO_RESET and Leave and Reset then
-			MatchLeaveToReset(Leave, Reset)
 		end
 
-		if FIRST_BUTTON_BLUE then
+	end
 
-			if Leave then
-				MakeBlue(Leave.confirm)
+	RunService.RenderStepped:Connect(function()
+
+		-- PC
+		if not (MOBILE_LAYOUT_LIKE_2021 and IsTouchDevice) then
+
+			local Leave, Reset
+
+			for _, Parts in pairs(Tracked) do
+
+				if Parts.Kind == "leave" then
+					Leave = Leave or Parts
+				else
+					Reset = Reset or Parts
+				end
+
+				if FIRST_BUTTON_BLUE then
+					MakeBlue(Parts.confirm)
+				end
+
 			end
 
-			if Reset then
-				MakeBlue(Reset.confirm)
+			if MATCH_LEAVE_TO_RESET and Leave and Reset then
+				pcall(MatchLeaveToReset, Leave, Reset)
 			end
 
+			return
+
+		end
+
+		-- Touch screen: the page on screen gets the 2021 copy.
+		local Shown
+
+		for _, Parts in pairs(Tracked) do
+
+			local OnScreen = false
+
+			if not Shown then
+				local Success, Result = pcall(IsOnScreen, Parts)
+				OnScreen = Success and Result
+			end
+
+			if OnScreen then
+				Shown = Parts
+			else
+				Restore(Parts)
+			end
+
+		end
+
+		for Parts, Copy in pairs(Copies) do
+			if Parts ~= Shown then
+				SetIfDifferent(Copy.Holder, "Visible", false)
+			end
+		end
+
+		if not Shown then
+			SetIfDifferent(Overlay, "Enabled", false)
+			return
+		end
+
+		if not Copies[Shown] then
+			local Success, Copy = pcall(MakeCopy, Shown)
+			if not Success then
+				warn("[Legacy] couldn't build the 2021 " .. Shown.Kind .. " page:", Copy)
+				return
+			end
+			Copies[Shown] = Copy
+		end
+
+		local Copy = Copies[Shown]
+		local Success, Placed = pcall(LayOut, Shown, Copy)
+
+		if not (Success and Placed) then
+			SetIfDifferent(Copy.Holder, "Visible", false)
+			Restore(Shown)
+			return
+		end
+
+		SetIfDifferent(Copy.Holder, "Visible", true)
+		SetIfDifferent(Overlay, "Enabled", true)
+
+		if os.clock() >= ShowRealUntil then
+			HideOriginals(Shown)
+		else
+			Restore(Shown)
 		end
 
 	end)
 
 end)
-
 
 -- Set by the 2017 chat notification bubble section below once it has
 -- found the top bar's own unread counter; the chat icon's extra badge
@@ -4056,12 +4381,16 @@ local NativeChatCounter = false
 -- the chat icon, overlapping the icon's top-right corner. Sized and
 -- placed as fractions of the icon, so it fits whatever size the icon
 -- is drawn at.
+-- Measured against the 2017 top bar on a phone, next to this one.
 local Legacy2017Badge = {
-	Color = Color3.fromRGB(248, 66, 69),
+	Color = Color3.fromRGB(229, 86, 83),
 	TextColor = Color3.new(1, 1, 1),
-	Size = 0.55, -- of the icon's width
-	CenterX = 0.95, -- of the icon's width, from its left edge
-	CenterY = 0.12, -- of the icon's height, from its top edge
+	Size = 0.478, -- of the icon's width
+	CenterX = 0.902, -- of the icon's width, from its left edge
+	CenterY = 0.16, -- of the icon's height, from its top edge
+	TextHeight = 1.07, -- number box, of the circle (the number is ~55% of it)
+	TextWidth = 0.86, -- room for "99+" before it shrinks
+	TextCenterY = 0.42, -- the 2017 number sits a little above the middle
 }
 
 local MakeLegacy2017Badge = function(Icon, Name)
@@ -4088,8 +4417,8 @@ local MakeLegacy2017Badge = function(Icon, Name)
 
 	Label.Name = "Amount"
 	Label.AnchorPoint = Vector2.new(0.5, 0.5)
-	Label.Position = UDim2.fromScale(0.5, 0.5)
-	Label.Size = UDim2.fromScale(1, 1)
+	Label.Position = UDim2.fromScale(0.5, Legacy2017Badge.TextCenterY)
+	Label.Size = UDim2.fromScale(Legacy2017Badge.TextWidth, Legacy2017Badge.TextHeight)
 	Label.BackgroundTransparency = 1
 	Label.Text = ""
 	Label.TextColor3 = Legacy2017Badge.TextColor
@@ -4100,15 +4429,6 @@ local MakeLegacy2017Badge = function(Icon, Name)
 	Label.TextYAlignment = Enum.TextYAlignment.Center
 	Label.ZIndex = Icon.ZIndex + 11
 	Label.Parent = Badge
-
-	-- Keeps the number the size it is in 2017 (about half the circle
-	-- tall) and lets "99+" shrink to fit.
-	local Padding = Instance.new("UIPadding")
-	Padding.PaddingTop = UDim.new(0.14, 0)
-	Padding.PaddingBottom = UDim.new(0.14, 0)
-	Padding.PaddingLeft = UDim.new(0.12, 0)
-	Padding.PaddingRight = UDim.new(0.12, 0)
-	Padding.Parent = Label
 
 	-- The badge hangs over the icon's edge: don't let anything crop it.
 	local Ancestor = Icon
